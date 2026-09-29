@@ -4,7 +4,7 @@ A small REST-backed MCP server for LibreChat. LibreChat is the only MCP client/f
 
 ## Configuration and run
 
-Set `DOCUSEAL_API_KEY` to a DocuSeal API key. `DOCUSEAL_URL` is optional and defaults to `https://signature.bullprog.com`. The bridge appends the required `/api/v1` path prefix and sends the key only to DocuSeal in the `X-Auth-Token` header.
+Set `DOCUSEAL_API_KEY` to a DocuSeal API key. `DOCUSEAL_URL` is optional and defaults to the instance origin `https://signature.bullprog.com`. The bridge uses the DocuSeal API base path `/api`; a configured URL may be either the origin or an API URL already ending in `/api`. The key is sent only in the `X-Auth-Token` header.
 
 Start locally with Python 3.11 or newer:
 
@@ -34,14 +34,14 @@ Compose does not publish port `8000` on the host. The bridge endpoint has no cli
 
 ## Available tools
 
-- `create_template_from_html`: sends `{name, html, size}` to `POST /api/v1/templates/html` and returns DocuSeal's template details. LibreChat should construct the HTML from the user's specification. Use named DocuSeal elements (such as `<text-field>`, `<date-field>`, and `<signature-field>`), set signer `role`, and use CSS styles to size and position fields. The bridge passes HTML through unchanged.
-- `search_templates`: searches `GET /api/v1/templates`.
-- `get_template`: retrieves `GET /api/v1/templates/{id}`.
-- `list_submissions`: filters `GET /api/v1/submissions` by template, status, query, and limit.
-- `send_submission`: posts to `POST /api/v1/submissions`. This may trigger signer notifications; call only on an explicit user request. The bridge enforces a 20-second total request deadline; if the outcome is unknown, inspect DocuSeal submissions before retrying.
-- `get_submission_status`: retrieves `GET /api/v1/submissions/{id}`.
+- `create_template_from_html`: sends `{name, html, size}` to `POST /api/templates/html` and returns DocuSeal's template details. LibreChat should construct the HTML from the user's specification. Use named DocuSeal elements (such as `<text-field>`, `<date-field>`, and `<signature-field>`), set signer `role`, and use CSS styles to size and position fields. The bridge passes HTML through unchanged.
+- `search_templates`: searches `GET /api/templates`.
+- `get_template`: retrieves `GET /api/templates/{id}`.
+- `list_submissions`: filters `GET /api/submissions` by template, status, query, and limit.
+- `send_submission`: posts to `POST /api/submissions`. This may trigger signer notifications; call only on an explicit user request. The bridge enforces a 20-second total request deadline; if the outcome is unknown, inspect DocuSeal submissions before retrying.
+- `get_submission_status`: retrieves `GET /api/submissions/{id}`.
 
-`DOCUSEAL_URL` must use HTTPS except for loopback development URLs. DocuSeal's published API documents routes without `/api/v1`; this bridge deliberately retains that required prefix. Compatibility with a particular on-prem DocuSeal target is not verified here. Do not use live submissions or assume target compatibility until validated against a safe sandbox and key.
+`DOCUSEAL_URL` must use HTTPS except for loopback development URLs. The bridge calls DocuSeal's documented unversioned routes beneath `/api`; DocuSeal's self-hosted integration documentation identifies an API base URL ending in `/api`. See https://www.docuseal.com/docs/api and https://www.docuseal.com/resources/automate-with-n8n. A safe live template round-trip is still required to verify compatibility with the deployed instance before relying on it.
 
 ## Tests
 

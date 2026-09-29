@@ -126,7 +126,7 @@ class DocuSealClient:
     ) -> Any:
         if not self._api_key:
             raise DocuSealAPIError("DOCUSEAL_API_KEY must be configured")
-        url = f"{self._base_url}/api/v1/{path.lstrip('/')}"
+        url = f"{self._base_url}/{path.lstrip('/')}"
         try:
             async with httpx.AsyncClient(
                 timeout=30.0, transport=self._transport
@@ -195,7 +195,10 @@ class DocuSealClient:
                 "DOCUSEAL_URL must use HTTPS without credentials, query, or fragment; "
                 "HTTP is allowed only for localhost"
             )
-        return base_url.rstrip("/")
+        normalized_url = base_url.rstrip("/")
+        if parsed.path.rstrip("/").endswith("/api"):
+            return normalized_url
+        return f"{normalized_url}/api"
 
     @staticmethod
     def _validate_id(resource_id: int, name: str) -> None:
