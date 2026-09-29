@@ -47,9 +47,26 @@ def test_search_templates_sends_query_and_pagination_and_returns_records():
     assert result["data"][0]["fields"] == [{"name": "Signer"}]
     request = seen[0]
     assert request.method == "GET"
-    assert request.url.path == "/api/v1/templates"
+    assert request.url.path == "/api/templates"
     assert dict(request.url.params) == {"q": "NDA", "limit": "25"}
     assert request.headers["X-Auth-Token"] == API_KEY
+
+
+def test_api_base_url_does_not_duplicate_api_path():
+    seen = []
+
+    def respond(request):
+        seen.append(request)
+        return httpx.Response(200, json={"data": [], "pagination": {}})
+
+    client = DocuSealClient(
+        base_url=f"{BASE_URL}/api/",
+        api_key=API_KEY,
+        transport=httpx.MockTransport(respond),
+    )
+    run(client.search_templates())
+
+    assert seen[0].url.path == "/api/templates"
 
 
 def test_create_template_posts_tagged_html_and_returns_template_details():
@@ -74,7 +91,7 @@ def test_create_template_posts_tagged_html_and_returns_template_details():
     assert result["fields"] == template["fields"]
     request = seen[0]
     assert request.method == "POST"
-    assert request.url.path == "/api/v1/templates/html"
+    assert request.url.path == "/api/templates/html"
     assert json.loads(request.content) == {"name": "Mutual NDA", "html": html, "size": "A4"}
     assert request.headers["X-Auth-Token"] == API_KEY
 
@@ -92,10 +109,10 @@ def test_get_template_uses_documented_detail_route_and_returns_id_fields():
     assert result["id"] == 42
     assert result["fields"] == template["fields"]
     assert seen[0].method == "GET"
-    assert seen[0].url.path == "/api/v1/templates/42"
+    assert seen[0].url.path == "/api/templates/42"
 
 
-def test_list_submissions_maps_supported_filters_to_v1_list_route():
+def test_list_submissions_maps_supported_filters_to_documented_list_route():
     payload = {"data": [{"id": 9, "template_id": 42, "status": "completed"}], "pagination": {}}
     seen = []
 
@@ -111,7 +128,7 @@ def test_list_submissions_maps_supported_filters_to_v1_list_route():
 
     assert result["data"][0]["id"] == 9
     assert seen[0].method == "GET"
-    assert seen[0].url.path == "/api/v1/submissions"
+    assert seen[0].url.path == "/api/submissions"
     assert dict(seen[0].url.params) == {
         "template_id": "42",
         "status": "completed",
@@ -149,7 +166,7 @@ def test_send_submission_posts_signer_data_and_returns_submission_id():
 
     assert result["submission_id"] == 73
     assert seen[0].method == "POST"
-    assert seen[0].url.path == "/api/v1/submissions"
+    assert seen[0].url.path == "/api/submissions"
     assert json.loads(seen[0].content) == {
         "template_id": 42,
         "submitters": [
@@ -176,7 +193,7 @@ def test_submission_status_uses_id_detail_route_and_returns_status():
     assert result["id"] == 73
     assert result["status"] == "completed"
     assert seen[0].method == "GET"
-    assert seen[0].url.path == "/api/v1/submissions/73"
+    assert seen[0].url.path == "/api/submissions/73"
 
 
 def test_http_error_is_propagated_without_exposing_api_key_or_document_html():
@@ -426,7 +443,7 @@ def test_submission_creation_rejects_invalid_returned_ids(submission_id):
 
 def test_submission_redirect_is_reported_as_unknown_outcome():
     def respond(request):
-        return httpx.Response(302, headers={"Location": "/api/v1/submissions/73"})
+        return httpx.Response(302, headers={"Location": "/api/submissions/73"})
 
     with pytest.raises(SubmissionOutcomeUnknown, match="may have been created"):
         run(

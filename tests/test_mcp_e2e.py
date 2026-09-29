@@ -35,17 +35,17 @@ def test_streamable_http_tools_call_docuseal_rest(monkeypatch):
 
     def respond(request):
         requests.append(request)
-        if request.url.path == "/api/v1/templates/html":
+        if request.url.path == "/api/templates/html":
             return httpx.Response(201, json=template)
-        if request.url.path == "/api/v1/templates":
+        if request.url.path == "/api/templates":
             return httpx.Response(200, json={"data": [template], "pagination": {}})
-        if request.url.path == "/api/v1/templates/42":
+        if request.url.path == "/api/templates/42":
             return httpx.Response(200, json=template)
-        if request.url.path == "/api/v1/submissions" and request.method == "POST":
+        if request.url.path == "/api/submissions" and request.method == "POST":
             return httpx.Response(201, json=[created_submitter])
-        if request.url.path == "/api/v1/submissions":
+        if request.url.path == "/api/submissions":
             return httpx.Response(200, json={"data": [submission], "pagination": {}})
-        if request.url.path == "/api/v1/submissions/73":
+        if request.url.path == "/api/submissions/73":
             return httpx.Response(200, json={"id": 73, "status": "completed"})
         raise AssertionError(f"Unexpected upstream request: {request.method} {request.url}")
 
@@ -137,12 +137,12 @@ def test_streamable_http_tools_call_docuseal_rest(monkeypatch):
 
     asyncio.run(exercise())
     assert [request.url.path for request in requests] == [
-        "/api/v1/templates/html",
-        "/api/v1/templates",
-        "/api/v1/templates/42",
-        "/api/v1/submissions",
-        "/api/v1/submissions",
-        "/api/v1/submissions/73",
+        "/api/templates/html",
+        "/api/templates",
+        "/api/templates/42",
+        "/api/submissions",
+        "/api/submissions",
+        "/api/submissions/73",
     ]
     assert all(request.headers["X-Auth-Token"] == "test-api-key" for request in requests)
     assert json.loads(requests[0].content) == {
