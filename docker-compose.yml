@@ -1,0 +1,18 @@
+services:
+  docuseal-mcp-bridge:
+    build: .
+    container_name: docuseal-mcp-bridge
+    expose:
+      - "8000"
+    networks:
+      - librechat
+    environment:
+      MCP_HOST: 0.0.0.0
+      DOCUSEAL_URL: ${DOCUSEAL_URL:-https://signature.bullprog.com}
+      DOCUSEAL_API_KEY: ${DOCUSEAL_API_KEY:?Set DOCUSEAL_API_KEY}
+    restart: unless-stopped
+
+networks:
+  librechat:
+    external: true
+    name: ${LIBRECHAT_NETWORK:?Set LIBRECHAT_NETWORK to LibreChat's existing Docker network}
