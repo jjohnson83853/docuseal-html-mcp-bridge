@@ -20,11 +20,12 @@ The MCP listener exposes only Streamable HTTP `/mcp` at port 8000. The artifact 
 Compose attaches the bridge only to the existing LibreChat and Caddy Docker networks and publishes no host port. These networks are trusted: a peer on the Caddy network can technically reach both listeners. Internet-facing Caddy must route only to the artifact listener; never proxy port 8000. Startup validates `ARTIFACT_PORT` before either listener starts. The REST API key may be omitted for export-only operation.
 
 ```sh
-LIBRECHAT_NETWORK=librechat_default \
-CADDY_NETWORK=caddy \
-ARTIFACT_PUBLIC_BASE_URL=https://downloads.example.com \
-ARTIFACT_PORT=8001 docker compose up --build -d
+cp .env.example .env
+# Edit .env: set the real Docker networks and public HTTPS origin.
+docker compose up --build -d
 ```
+
+Compose reads `.env` automatically. `.env` is ignored by Git; keep credentials there and never commit it. `DOCUSEAL_API_KEY` is optional for offline export.
 
 LibreChat connects over its private network:
 
