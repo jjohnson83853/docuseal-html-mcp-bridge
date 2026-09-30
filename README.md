@@ -1,25 +1,32 @@
 # DocuSeal HTML MCP bridge
 
-A small REST-backed MCP server for LibreChat. LibreChat is the only MCP client/front door; this bridge calls DocuSeal using its REST API and does not connect to DocuSeal's native MCP endpoint.
+This bridge provides LibreChat with private Streamable HTTP MCP access to five DocuSeal REST operations and an offline HTML-to-PDF/DOCX export tool. Export does not call DocuSeal and works without `DOCUSEAL_API_KEY`. Exported documents are upload-ready drafts, not created DocuSeal templates; upload the PDF or DOCX manually and place/verify the fields in DocuSeal's editor. DOCX supports a smaller HTML/CSS subset than PDF, so layout may differ.
 
 ## Configuration and run
 
-Set `DOCUSEAL_API_KEY` to a DocuSeal API key. `DOCUSEAL_URL` is optional and defaults to the instance origin `https://signature.bullprog.com`. The bridge uses the DocuSeal API base path `/api`; a configured URL may be either the origin or an API URL already ending in `/api`. The key is sent only in the `X-Auth-Token` header.
-
-Start locally with Python 3.11 or newer:
+Python 3.11 or newer is required. Local renders require the `libreoffice` executable with Writer's PDF export filter for DOCX page-limit validation; the Docker image installs `libreoffice-writer-nogui`. DOCX exports fail closed when this validation is unavailable. `DOCUSEAL_URL` defaults to `https://signature.bullprog.com`; a configured origin or URL ending in `/api` is accepted. `DOCUSEAL_API_KEY` is optional at startup, is sent only in `X-Auth-Token`, and is required for REST-backed tools. `ARTIFACT_PUBLIC_BASE_URL` must be set to the exact browser-reachable HTTPS origin (no path, query, fragment, or credentials) before export can return links. `ARTIFACT_PORT` defaults to `8001`, must be between 1024 and 65535, and cannot be `8000`. `ARTIFACT_DIR` defaults to a private ephemeral directory; artifacts are not durable across container restart.
+Render/resource settings are configurable with `MAX_INPUT_BYTES`, `MAX_OUTPUT_BYTES`, `MAX_PAGES`, `MAX_IMAGE_BYTES`, `MAX_IMAGE_PIXELS`, and `WORKER_TIMEOUT_SECONDS`; aggregate storage uses `MAX_ARTIFACT_BYTES`, `MAX_ARTIFACT_FILES`, and `ARTIFACT_RETENTION_SECONDS` (maximum 86400). `MAX_CONCURRENT_RENDERS` must remain `1`; the worker has fixed 45-second CPU and 1-GiB address-space ceilings.
 
 ```sh
+sudo apt-get install --no-install-recommends libreoffice-writer-nogui
+
 python -m pip install -r requirements.txt
-DOCUSEAL_API_KEY=... python server.py
+MCP_HOST=127.0.0.1 ARTIFACT_HOST=127.0.0.1 \
+ARTIFACT_PUBLIC_BASE_URL=https://downloads.example.com python server.py
 ```
 
-The MCP Streamable HTTP endpoint listens on port `8000` at `/mcp`. A direct Python run binds to `127.0.0.1` by default; Docker binds to `0.0.0.0` inside the shared container network without publishing a host port. Compose requires `DOCUSEAL_API_KEY` and the name of an existing Docker network shared with LibreChat:
+The MCP listener exposes only Streamable HTTP `/mcp` at port 8000. The artifact listener is a separate ASGI application on `ARTIFACT_PORT`, exposing only `GET /download`. Both bind addresses are configurable (`MCP_HOST`, `ARTIFACT_HOST`). The artifact port is configurable in Compose with the same value supplied to its environment and `expose` list.
+
+Compose attaches the bridge only to the existing LibreChat and Caddy Docker networks and publishes no host port. These networks are trusted: a peer on the Caddy network can technically reach both listeners. Internet-facing Caddy must route only to the artifact listener; never proxy port 8000. Startup validates `ARTIFACT_PORT` before either listener starts. The REST API key may be omitted for export-only operation.
 
 ```sh
-LIBRECHAT_NETWORK=librechat_default DOCUSEAL_API_KEY=... docker compose up --build -d
+LIBRECHAT_NETWORK=librechat_default \
+CADDY_NETWORK=caddy \
+ARTIFACT_PUBLIC_BASE_URL=https://downloads.example.com \
+ARTIFACT_PORT=8001 docker compose up --build -d
 ```
 
-LibreChat's YAML entry uses the bridge's service/container DNS name on that network:
+LibreChat connects over its private network:
 
 ```yaml
 mcpServers:
@@ -30,19 +37,65 @@ mcpServers:
     serverInstructions: true
 ```
 
-Compose does not publish port `8000` on the host. The bridge endpoint has no client authentication; only attach trusted LibreChat services to the configured network. For local development, do not expose the listener to untrusted networks.
+### Caddy routing and log redaction
+
+Configure Caddy's default runtime logger to exclude `http.log.error` and `http.log.access`. Route `http.log.error` only through a named filtered runtime logger, and filter the site access logger separately. Both filters replace the `token` query value and delete `Referer`; the examples write to stdout. Apply equivalent filters to every other enabled sink. Caddy logging and filter docs: <https://caddyserver.com/docs/logging> and <https://caddyserver.com/docs/caddyfile/directives/log#filter-formats>.
+
+```caddyfile
+{
+    log {
+        output stdout
+        exclude http.log.error http.log.access
+    }
+    log caddy_errors {
+        include http.log.error
+        output stdout
+        format filter {
+            wrap json
+            fields {
+                request>uri query {
+                    replace token REDACTED
+                }
+                request>headers>Referer delete
+            }
+        }
+    }
+}
+
+downloads.example.com {
+    log {
+        output stdout
+        format filter {
+            fields {
+                request>uri query {
+                    replace token REDACTED
+                }
+                request>headers>Referer delete
+            }
+        }
+    }
+    reverse_proxy docuseal-mcp-bridge:{$ARTIFACT_PORT}
+}
+```
+
+
+The `ARTIFACT_PORT` value in the Caddy process must be the same value used by Compose. The global default logger excludes the raw HTTP error and access namespaces; the named error logger is the only configured runtime sink for `http.log.error`. Before deployment, probe synthetic-token successes, redirects, and upstream failures—including a synthetic `Referer` containing the same token-bearing URL—against every enabled Caddy log sink with debug/trace disabled; confirm no token appears. Bridge download access logging is disabled and bridge logs use allowlisted fields. Portainer-to-Loki ingestion and its stable `service_name=docuseal-mcp-bridge` label must be confirmed by the operator in the deployed environment; this repository change does not claim live Portainer/Loki verification.
 
 ## Available tools
 
-- `create_template_from_html`: sends `{name, html, size}` to `POST /api/templates/html` and returns DocuSeal's template details. LibreChat should construct the HTML from the user's specification. Use named DocuSeal elements (such as `<text-field>`, `<date-field>`, and `<signature-field>`), set signer `role`, and use CSS styles to size and position fields. The bridge passes HTML through unchanged.
+- `render_template_documents(template_name, html_content, document_size="Letter")`: locally renders a PDF and DOCX and returns one format-bound, expiring download link per file plus `expires_at`. It never calls DocuSeal. Named `text-field`, `date-field`, `signature-field`, `initials-field`, `checkbox-field`, `radio-field`, and `select-field` elements become visible `[name — Type field]` labels. The seven field kinds require a non-empty `name`; styles that could hide or erase these labels are removed, while approved spacing, layout, and emphasis styles are preserved. Unsupported external resources are disabled/omitted. Users manually upload a returned file, then place and verify interactive fields in DocuSeal.
 - `search_templates`: searches `GET /api/templates`.
 - `get_template`: retrieves `GET /api/templates/{id}`.
-- `list_submissions`: filters `GET /api/submissions` by template, status, query, and limit.
-- `send_submission`: posts to `POST /api/submissions`. This may trigger signer notifications; call only on an explicit user request. The bridge enforces a 20-second total request deadline; if the outcome is unknown, inspect DocuSeal submissions before retrying.
+- `list_submissions`: filters `GET /api/submissions`.
+- `send_submission`: posts to `POST /api/submissions`; this can email signers and is allowed only on explicit user request. A 20-second total request deadline applies; if the result is unknown, inspect DocuSeal before retrying.
 - `get_submission_status`: retrieves `GET /api/submissions/{id}`.
 
-`DOCUSEAL_URL` must use HTTPS except for loopback development URLs. The bridge calls DocuSeal's documented unversioned routes beneath `/api`; DocuSeal's self-hosted integration documentation identifies an API base URL ending in `/api`. See https://www.docuseal.com/docs/api and https://www.docuseal.com/resources/automate-with-n8n. A safe live template round-trip is still required to verify compatibility with the deployed instance before relying on it.
+Artifact links are bearer capabilities: anyone with a live link can fetch that one format until expiry. Tokens are random, format-scoped, and expire within 24 hours (default 24h). A process/container restart may invalidate them earlier. Downloads have fixed content type, attachment filename, `nosniff`, `no-store`, and `no-referrer` headers. Artifact storage is ephemeral, private, bounded to 256 MiB/100 files by default, and refuses new files rather than evicting unexpired artifacts. Only one render worker runs at a time; worker input/output, CPU, memory, and wall-clock time are bounded. The Docker image runs the worker under UID 10001. If the parent is launched as root, the child drops to the unprivileged `nobody` UID before interpreter startup, with no supplemental groups. A worker inheriting a non-root bridge service UID can read unexpired artifacts owned by that UID; this residual is accepted. The worker receives no REST secret environment variables. No host port is published.
+
+Both renderers receive normalized HTML. Script, SVG, external stylesheets, CSS imports/resource URLs, external/local images and other unsupported active content are not loaded. Embedded raster images retained in the normalized subset are validated against byte and pixel ceilings before either converter sees them. WeasyPrint renders PDF; pinned `html-for-docx` produces DOCX. Unsupported layout/style fidelity is not guaranteed.
+
+`DOCUSEAL_URL` must use HTTPS except for loopback development URLs. REST logs carry only operation, correlation ID, upstream hostname/path (without query/body), status, duration, and safe error class. API response bodies, credentials, HTML, tokens, raw download URIs, and Referer values are not returned in errors/logs.
 
 ## Tests
 
-Install development dependencies and run `pytest`. The suite enforces at least 90% combined line coverage for the REST adapter and MCP server. Tests use `httpx.MockTransport` for DocuSeal calls and an in-process Streamable HTTP client; they do not contact DocuSeal or send signer emails.
+Install development dependencies and run `pytest`. Tests use mocked upstream transports and in-process ASGI clients; they must not contact DocuSeal or send signer emails. Verify local rendering/download behavior before deployment; Docker, Caddy log sinks, and deployed Portainer/Loki checks require an available runtime and operator authorization.

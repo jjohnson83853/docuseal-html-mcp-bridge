@@ -2,17 +2,38 @@ services:
   docuseal-mcp-bridge:
     build: .
     container_name: docuseal-mcp-bridge
+    labels:
+      service_name: docuseal-mcp-bridge
     expose:
       - "8000"
+      - "${ARTIFACT_PORT:-8001}"
     networks:
       - librechat
+      - caddy
     environment:
       MCP_HOST: 0.0.0.0
+      ARTIFACT_HOST: 0.0.0.0
+      ARTIFACT_PORT: ${ARTIFACT_PORT:-8001}
+      ARTIFACT_DIR: /var/lib/docuseal-artifacts
+      ARTIFACT_PUBLIC_BASE_URL: ${ARTIFACT_PUBLIC_BASE_URL:-}
+      ARTIFACT_RETENTION_SECONDS: ${ARTIFACT_RETENTION_SECONDS:-86400}
+      MAX_ARTIFACT_BYTES: ${MAX_ARTIFACT_BYTES:-268435456}
+      MAX_ARTIFACT_FILES: ${MAX_ARTIFACT_FILES:-100}
+      MAX_CONCURRENT_RENDERS: ${MAX_CONCURRENT_RENDERS:-1}
+      MAX_INPUT_BYTES: ${MAX_INPUT_BYTES:-2097152}
+      MAX_OUTPUT_BYTES: ${MAX_OUTPUT_BYTES:-20971520}
+      MAX_PAGES: ${MAX_PAGES:-100}
+      MAX_IMAGE_BYTES: ${MAX_IMAGE_BYTES:-2097152}
+      MAX_IMAGE_PIXELS: ${MAX_IMAGE_PIXELS:-20000000}
+      WORKER_TIMEOUT_SECONDS: ${WORKER_TIMEOUT_SECONDS:-60}
       DOCUSEAL_URL: ${DOCUSEAL_URL:-https://signature.bullprog.com}
-      DOCUSEAL_API_KEY: ${DOCUSEAL_API_KEY:?Set DOCUSEAL_API_KEY}
+      DOCUSEAL_API_KEY: ${DOCUSEAL_API_KEY:-}
     restart: unless-stopped
 
 networks:
   librechat:
     external: true
     name: ${LIBRECHAT_NETWORK:?Set LIBRECHAT_NETWORK to LibreChat's existing Docker network}
+  caddy:
+    external: true
+    name: ${CADDY_NETWORK:?Set CADDY_NETWORK to Caddy's existing Docker network}

@@ -1,6 +1,6 @@
 # Plan: DocuSeal HTML MCP Bridge for LibreChat
 
-Status: IMPLEMENTED — deterministic and local MCP verification pass; live DocuSeal/LibreChat acceptance remains blocked by unavailable deployment prerequisites
+Status: SUPERSEDED for HTML exports by `.omp/plans/docuseal-html-export-links.md`; the REST/MCP bridge history and remaining five REST tools remain relevant.
 Created: 2026-09-29
 Scope note: this plan supersedes the previous minimal `server.py` bridge turn; it treats the existing four files as the starting point to be revised, not replaced wholesale.
 

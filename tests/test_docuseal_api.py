@@ -7,7 +7,10 @@ import pytest
 import docuseal_api
 from docuseal_api import (
     DocuSealAPIError,
+    DocuSealAuthenticationError,
+    DocuSealAuthorizationError,
     DocuSealClient,
+    DocuSealNotFoundError,
     SubmissionOutcomeUnknown,
 )
 
@@ -68,32 +71,6 @@ def test_api_base_url_does_not_duplicate_api_path():
 
     assert seen[0].url.path == "/api/templates"
 
-
-def test_create_template_posts_tagged_html_and_returns_template_details():
-    html = '<text-field name="legal name" role="Signer" required></text-field>\n雪'
-    template = {
-        "id": 42,
-        "slug": "mutual-nda",
-        "name": "Mutual NDA",
-        "fields": [{"name": "legal name", "type": "text"}],
-        "created_at": "2026-09-29T00:00:00Z",
-    }
-    seen = []
-
-    def respond(request):
-        seen.append(request)
-        return httpx.Response(201, json=template)
-
-    client = make_client(respond)
-    result = run(client.create_template_from_html("Mutual NDA", html, "A4"))
-
-    assert result["id"] == 42
-    assert result["fields"] == template["fields"]
-    request = seen[0]
-    assert request.method == "POST"
-    assert request.url.path == "/api/templates/html"
-    assert json.loads(request.content) == {"name": "Mutual NDA", "html": html, "size": "A4"}
-    assert request.headers["X-Auth-Token"] == API_KEY
 
 
 def test_get_template_uses_documented_detail_route_and_returns_id_fields():
@@ -216,6 +193,55 @@ def test_http_error_is_propagated_without_exposing_api_key_or_document_html():
     assert api_key not in str(error.value)
     assert document_html not in str(error.value)
 
+@pytest.mark.parametrize(
+    ("status", "error_type"),
+    [
+        (401, DocuSealAuthenticationError),
+        (403, DocuSealAuthorizationError),
+        (404, DocuSealNotFoundError),
+    ],
+)
+def test_http_status_errors_have_safe_distinct_classes_and_correlation_ids(
+    status, error_type, caplog
+):
+    import server
+
+    caplog.set_level("INFO")
+    api_key = "synthetic-api-secret"
+    upstream_body = "synthetic-private-response-body"
+
+    def respond(request):
+        return httpx.Response(status, text=upstream_body)
+
+    client = DocuSealClient(
+        base_url=BASE_URL,
+        api_key=api_key,
+        transport=httpx.MockTransport(respond),
+    )
+
+    with pytest.raises(error_type) as error:
+        run(client.search_templates(query="private-query"))
+
+    assert isinstance(error.value, DocuSealAPIError)
+    assert error.value.status_code == status
+    assert isinstance(error.value.correlation_id, str)
+    assert error.value.correlation_id
+    assert api_key not in str(error.value)
+    assert upstream_body not in str(error.value)
+    assert api_key not in caplog.text
+    assert upstream_body not in caplog.text
+    assert "private-query" not in caplog.text
+
+    record = next(
+        record for record in caplog.records
+        if getattr(record, "correlation_id", None) == error.value.correlation_id
+    )
+    assert record.operation == "search_templates"
+    assert record.upstream_host == "signature.example"
+    assert record.path == "/api/templates"
+    assert record.status_code == status
+    assert record.duration_ms >= 0
+    assert record.error_class == error_type.__name__
 
 def test_missing_api_key_fails_clearly_before_sending_request():
     requests = []
@@ -354,11 +380,13 @@ def test_submission_timeout_warns_not_to_retry_without_checking_first():
     assert detail not in str(error.value)
 
 
-def test_failed_submission_response_warns_that_request_may_exist():
+def test_failed_submission_response_warns_that_request_may_exist(caplog):
+    caplog.set_level("INFO", logger="docuseal_api")
+
     def respond(request):
         return httpx.Response(500, text="private upstream response")
 
-    with pytest.raises(SubmissionOutcomeUnknown, match="may have been created"):
+    with pytest.raises(SubmissionOutcomeUnknown, match="may have been created") as error:
         run(
             make_client(respond).send_submission(
                 template_id=42,
@@ -367,6 +395,12 @@ def test_failed_submission_response_warns_that_request_may_exist():
             )
         )
 
+    record = next(
+        record for record in caplog.records
+        if getattr(record, "operation", None) == "send_submission"
+    )
+    assert error.value.correlation_id == record.correlation_id
+    assert error.value.status_code == 500
 
 def test_loopback_http_is_allowed_for_local_docuseal_development():
     def respond(request):
@@ -413,6 +447,31 @@ def test_non_json_submission_response_warns_of_unknown_outcome():
         )
 
 
+
+
+def test_invalid_submission_shape_preserves_response_status_and_error_log(caplog):
+    caplog.set_level("INFO", logger="docuseal_api")
+
+    def respond(request):
+        return httpx.Response(201, json=[])
+
+    with pytest.raises(SubmissionOutcomeUnknown) as error:
+        run(
+            make_client(respond).send_submission(
+                template_id=42,
+                signer_email="signer@example.test",
+                signer_name="Ada",
+            )
+        )
+
+    record = next(
+        record for record in caplog.records
+        if getattr(record, "operation", None) == "send_submission"
+    )
+    assert error.value.correlation_id == record.correlation_id
+    assert error.value.status_code == 201
+    assert record.status_code == 201
+    assert record.error_class == "SubmissionOutcomeUnknown"
 @pytest.mark.parametrize("limit", [0, 101])
 def test_submission_listing_rejects_limits_outside_api_bounds(limit):
     requests = []
