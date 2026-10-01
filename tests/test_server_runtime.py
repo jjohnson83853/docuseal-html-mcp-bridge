@@ -2,11 +2,9 @@ import asyncio
 from pathlib import Path
 from typing import cast
 
-import httpx
 import pytest
 
 import server
-from docuseal_api import DocuSealClient
 from docuseal_mcp import DocuSealMcpError
 from document_export import RenderLimits
 from server import ServerConfig
@@ -188,12 +186,7 @@ def test_search_templates_routes_only_to_upstream_mcp(monkeypatch):
             calls.append((query, limit))
             return {"data": [{"id": 8, "name": "MCP result"}]}
 
-    class RestClient:
-        async def search_templates(self, *args):
-            raise AssertionError("REST search must not be used")
-
     monkeypatch.setattr(server, "_mcp_client", McpClient())
-    monkeypatch.setattr(server, "_api_client", RestClient())
 
     result = asyncio.run(server.search_templates("query", 5))
 
@@ -201,20 +194,12 @@ def test_search_templates_routes_only_to_upstream_mcp(monkeypatch):
     assert calls == [("query", 5)]
 
 
-def test_missing_mcp_token_never_falls_back_to_configured_rest_key(monkeypatch):
-    requests = []
-    rest_client = DocuSealClient(
-        base_url="https://rest.example",
-        api_key="configured-rest-key",
-        transport=httpx.MockTransport(lambda request: requests.append(request)),
-    )
+def test_missing_mcp_token_fails_safely(monkeypatch):
     monkeypatch.setattr(
-        server, "_mcp_client", server.DocuSealMcpClient("https://native.example/mcp", "")
+        server,
+        "_mcp_client",
+        server.DocuSealMcpClient("https://native.example", ""),
     )
-    monkeypatch.setattr(server, "_api_client", rest_client)
 
-    with pytest.raises(
-        DocuSealMcpError, match="DOCUSEAL_MCP_BEARER_TOKEN"
-    ):
+    with pytest.raises(DocuSealMcpError, match="DOCUSEAL_MCP_BEARER_TOKEN"):
         asyncio.run(server.search_templates())
-    assert requests == []

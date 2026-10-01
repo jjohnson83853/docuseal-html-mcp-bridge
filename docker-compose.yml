@@ -27,7 +27,7 @@ services:
       MAX_IMAGE_PIXELS: ${MAX_IMAGE_PIXELS:-20000000}
       WORKER_TIMEOUT_SECONDS: ${WORKER_TIMEOUT_SECONDS:-60}
       DOCUSEAL_URL: ${DOCUSEAL_URL:-https://signature.bullprog.com}
-      DOCUSEAL_API_KEY: ${DOCUSEAL_API_KEY:-}
+      DOCUSEAL_MCP_BEARER_TOKEN: ${DOCUSEAL_MCP_BEARER_TOKEN:-}
     restart: unless-stopped
 
 networks:

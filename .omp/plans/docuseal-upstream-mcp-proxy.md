@@ -84,7 +84,7 @@ Two REST-backed capabilities lack a documented native MCP equivalent:
 - SDK pin remains `mcp==1.30.0` (v1 line, protocol `2025-11-25`).
 - `.env.example`, `docker-compose.yml`, and README expose only `DOCUSEAL_URL` and `DOCUSEAL_MCP_BEARER_TOKEN`; README states the removed submission filters/status lookup and native result envelopes.
 
-## 6. Implementation Task List (gated — not started)
+## 6. Implementation Task List
 
 1. **Requirements approval (user checkpoint 1).** Confirm exactly two DocuSeal env values, native-MCP-only routing, Option A compatibility losses, and no `create_template`. *Acceptance:* approval recorded.
 2. **Design approval (user checkpoint 2).** Confirm retained tool names/result envelopes, exact `send_submission` to `send_documents` mapping, origin derivation, authentication behavior, redaction, and outcome-unknown handling. *Acceptance:* approval recorded.
@@ -116,6 +116,10 @@ Two REST-backed capabilities lack a documented native MCP equivalent:
 - Tasks: **APPROVED by user on 2026-10-01** — RED-first tests, native MCP migration and REST/config removal, Dockerfile adapter packaging, docs, focused/full verification and reviews; no live DocuSeal calls or deployment.
 - Critic reviews: prior **PASS (2026-10-01)** covered the earlier task list. The Dockerfile packaging amendment also received **Critic PASS (2026-10-01; no findings)**. Previous result-contract, URL/token, and nested-field findings remain resolved.
 - Implementation gate: **OPEN on 2026-10-01.** Requirements, design, amended task approval, and Critic PASS are recorded.
+- Implementation: **COMPLETE, uncommitted (2026-10-01).** Native MCP-only routes, two-value configuration, unsupported-operation removal, docs, and Docker packaging are implemented. The post-dispatch cancellation regression failed before the fix and passed on the same test after it.
+- Verification: focused suite **86 passed**; full suite **185 passed, 2 skipped, 90.11% coverage** (90% required); in-process Streamable HTTP smoke covers all retained upstream MCP operations. No live DocuSeal request, Docker build, deployment, or registry push.
+- Reviews: final code, Python, and security reviews **PASS**. Review findings on ambiguous send results and post-dispatch cancellation were fixed and re-reviewed.
+- Commit/push gate: **APPROVED by user on 2026-10-01** after review of the final diff; conventional commit and push are authorized.
 
 ### Revision 1 records — SUPERSEDED 2026-10-01
 

@@ -2,63 +2,61 @@ import asyncio
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
-from types import SimpleNamespace
 
-import pytest
 import httpx
+import pytest
 
 import server
-from docuseal_api import DocuSealClient
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
+from mcp.types import CallToolResult, TextContent
 
 
-def test_streamable_http_tools_call_docuseal_rest(monkeypatch):
-    requests = []
-    template = {
-        "id": 42,
-        "name": "Mutual NDA",
-        "slug": "mutual-nda",
-        "fields": [{"name": "Signer name", "type": "text"}],
-    }
-    submitter = {
-        "email": "signer@example.test",
-        "name": "Ada",
-        "role": "Signer",
-    }
-    submission = {"id": 73, "template_id": 42, "status": "pending"}
 
-    created_submitter = {
-        **submitter,
-        "id": 9,
-        "submission_id": 73,
-        "status": "pending",
+def test_streamable_http_bridge_uses_only_retained_native_mcp_tools(monkeypatch):
+    import docuseal_mcp
+
+    native_calls = []
+    native_results = {
+        "search_templates": [{"id": 42, "name": "Mutual NDA"}],
+        "load_template": {"id": 42, "name": "Mutual NDA", "fields": []},
+        "search_documents": {"documents": [{"id": 73, "status": "completed"}]},
+        "send_documents": {"documents": [{"id": 74, "status": "pending"}]},
     }
 
-    def respond(request):
-        requests.append(request)
-        if request.url.path == "/api/templates/42":
-            return httpx.Response(200, json=template)
-        if request.url.path == "/api/submissions" and request.method == "POST":
-            return httpx.Response(201, json=[created_submitter])
-        if request.url.path == "/api/submissions":
-            return httpx.Response(200, json={"data": [submission], "pagination": {}})
-        if request.url.path == "/api/submissions/73":
-            return httpx.Response(200, json={"id": 73, "status": "completed"})
-        raise AssertionError(f"Unexpected upstream request: {request.method} {request.url}")
+    class UpstreamSession:
+        async def __aenter__(self):
+            return self
 
-    api = DocuSealClient(
-        base_url="https://signature.example",
-        api_key="test-api-key",
-        transport=httpx.MockTransport(respond),
+        async def __aexit__(self, *args):
+            return False
+
+        async def initialize(self):
+            return None
+
+        async def call_tool(self, name, arguments):
+            native_calls.append((name, arguments))
+            result = native_results[name]
+            return CallToolResult(
+                content=[TextContent(type="text", text=json.dumps(result))],
+                structuredContent=(
+                    None if name == "search_templates" else result
+                ),
+            )
+
+    @asynccontextmanager
+    async def upstream_transport(url, *, http_client):
+        assert url == "https://native.example/mcp"
+        assert http_client.headers["Authorization"] == "Bearer native-token"
+        yield object(), object(), "session"
+
+    monkeypatch.setattr(docuseal_mcp, "streamable_http_client", upstream_transport)
+    monkeypatch.setattr(docuseal_mcp, "ClientSession", lambda *args: UpstreamSession())
+    monkeypatch.setattr(
+        server,
+        "_mcp_client",
+        docuseal_mcp.DocuSealMcpClient("https://native.example", "native-token"),
     )
-
-    class SearchClient:
-        async def search_templates(self, query="", limit=10):
-            return {"data": [{"id": 42, "name": "Mutual NDA"}]}
-
-    monkeypatch.setattr(server, "_api_client", api)
-    monkeypatch.setattr(server, "_mcp_client", SearchClient())
     app = server.mcp.streamable_http_app()
 
     def client_factory(*, headers, timeout, auth):
@@ -68,6 +66,7 @@ def test_streamable_http_tools_call_docuseal_rest(monkeypatch):
             timeout=timeout,
             auth=auth,
         )
+
     async def exercise():
         async with app.router.lifespan_context(app):
             async with streamablehttp_client(
@@ -81,82 +80,87 @@ def test_streamable_http_tools_call_docuseal_rest(monkeypatch):
                         "render_template_documents",
                         "search_templates",
                         "get_template",
-                        "list_submissions",
                         "send_submission",
-                        "get_submission_status",
+                        "search_documents",
                     }
-                    render_tool = next(
-                        tool for tool in tools.tools
-                        if tool.name == "render_template_documents"
-                    )
-                    assert "manual" in render_tool.description.lower()
 
                     async def call(name, arguments):
                         result = await session.call_tool(name, arguments)
-                        assert not result.isError, result
+                        assert not result.isError, (result, native_calls)
                         value = result.structuredContent
                         if value is None:
                             value = json.loads(result.content[0].text)
                         return value
 
-                    found = await call("search_templates", {"query": "NDA"})
-                    assert found == {"data": [{"id": 42, "name": "Mutual NDA"}]}
-
-                    loaded = await call("get_template", {"template_id": 42})
-                    assert loaded["id"] == 42
-                    assert loaded["fields"] == template["fields"]
-
-                    submissions = await call(
-                        "list_submissions",
-                        {"template_id": 42, "status": "pending"},
+                    found = await call(
+                        "search_templates", {"query": "Mutual NDA", "limit": 12}
                     )
-                    submission_id = submissions["data"][0]["id"]
-                    assert submission_id == 73
-
-                    sent = await call(
+                    assert found["data"] == native_results["search_templates"]
+                    loaded = await call("get_template", {"template_id": 42})
+                    assert loaded["structuredContent"] == native_results["load_template"]
+                    documents = await call(
+                        "search_documents", {"q": "completed", "limit": 8}
+                    )
+                    assert documents["structuredContent"] == native_results["search_documents"]
+                    assert documents["content"][0]["text"] == json.dumps(
+                        native_results["search_documents"]
+                    )
+                    with_fields = await call(
                         "send_submission",
                         {
                             "template_id": 42,
                             "signer_email": "signer@example.test",
                             "signer_name": "Ada",
+                            "signer_role": "Reviewer",
+                            "field_values": {"Signer name": 19},
                         },
                     )
-                    assert sent["submission_id"] == 73
-
-                    status = await call(
-                        "get_submission_status", {"submission_id": submission_id}
+                    assert with_fields["structuredContent"] == native_results["send_documents"]
+                    without_fields = await call(
+                        "send_submission",
+                        {
+                            "template_id": 42,
+                            "signer_email": "other@example.test",
+                            "signer_name": "Lin",
+                            "field_values": None,
+                        },
                     )
-                    assert status["id"] == submission_id
-                    assert status["status"] == "completed"
+                    assert without_fields["structuredContent"] == native_results["send_documents"]
 
     asyncio.run(exercise())
-    assert [request.url.path for request in requests] == [
-        "/api/templates/42",
-        "/api/submissions",
-        "/api/submissions",
-        "/api/submissions/73",
-    ]
-    assert all(request.headers["X-Auth-Token"] == "test-api-key" for request in requests)
-    assert dict(requests[1].url.params) == {
-        "template_id": "42", "status": "pending", "limit": "10"
-    }
-    assert json.loads(requests[2].content) == {
-        "template_id": 42,
-        "submitters": [
+    assert native_calls == [
+        ("search_templates", {"q": "Mutual NDA", "limit": 12}),
+        ("load_template", {"template_id": 42}),
+        ("search_documents", {"q": "completed", "limit": 8}),
+        (
+            "send_documents",
             {
-                "email": "signer@example.test",
-                "name": "Ada",
-                "role": "Signer",
-            }
-        ],
-    }
+                "template_id": 42,
+                "submitters": [{
+                    "email": "signer@example.test",
+                    "name": "Ada",
+                    "role": "Reviewer",
+                    "fields": [{"name": "Signer name", "value": 19}],
+                }],
+            },
+        ),
+        (
+            "send_documents",
+            {
+                "template_id": 42,
+                "submitters": [{
+                    "email": "other@example.test",
+                    "name": "Lin",
+                    "role": "Signer",
+                }],
+            },
+        ),
+    ]
 
+def test_server_starts_without_mcp_bearer_token(monkeypatch):
 
-
-def test_server_starts_without_docuseal_api_key(monkeypatch):
-
-    monkeypatch.setattr(server, "DOCUSEAL_API_KEY", "")
-    monkeypatch.delenv("DOCUSEAL_API_KEY", raising=False)
+    monkeypatch.setattr(server, "DOCUSEAL_MCP_BEARER_TOKEN", "")
+    monkeypatch.delenv("DOCUSEAL_MCP_BEARER_TOKEN", raising=False)
     started = []
 
     async def run_servers(config):
@@ -167,6 +171,29 @@ def test_server_starts_without_docuseal_api_key(monkeypatch):
     server.main()
 
     assert len(started) == 1
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "http://signature.example",
+        "https://signature.example/mcp",
+        "https://user:secret@signature.example",
+        "https://signature.example?",
+        "https://signature.example:65536",
+    ],
+)
+def test_invalid_docuseal_origin_fails_before_server_starts(monkeypatch, origin):
+    monkeypatch.setenv("DOCUSEAL_URL", origin)
+    started = []
+
+    async def run_servers(config):
+        started.append(config)
+
+    monkeypatch.setattr(server, "run_servers", run_servers)
+
+    with pytest.raises(ValueError, match="DOCUSEAL_URL"):
+        server.main()
+
+    assert started == []
 @pytest.mark.parametrize("port", ["8000", "1023", "65536", "not-a-port", ""])
 def test_invalid_artifact_port_fails_before_any_listener_starts(monkeypatch, port):
     monkeypatch.setenv("ARTIFACT_PORT", port)
@@ -223,7 +250,7 @@ def test_mcp_listener_does_not_serve_artifact_download_route():
 
     assert response.status_code == 404
 
-def test_mcp_render_tool_works_without_rest_key_or_upstream_requests(monkeypatch, tmp_path):
+def test_mcp_render_tool_works_without_mcp_token_or_upstream_calls(monkeypatch, tmp_path):
     import document_export
 
     async def render_without_external_pagination(*args, **kwargs):
@@ -236,25 +263,11 @@ def test_mcp_render_tool_works_without_rest_key_or_upstream_requests(monkeypatch
     )
     from mcp.server.fastmcp import FastMCP
 
-    requests = []
-
-    def reject_upstream(request):
-        requests.append(request)
-        raise AssertionError("offline rendering attempted a DocuSeal request")
-
-    monkeypatch.setattr(server, "DOCUSEAL_API_KEY", "")
-    monkeypatch.setenv("DOCUSEAL_API_KEY", "")
+    monkeypatch.setattr(server, "DOCUSEAL_MCP_BEARER_TOKEN", "")
+    monkeypatch.setenv("DOCUSEAL_MCP_BEARER_TOKEN", "")
     monkeypatch.setenv("ARTIFACT_PUBLIC_BASE_URL", "https://downloads.example.test")
     monkeypatch.setattr(server, "_artifact_store", server.ArtifactStore(tmp_path))
-    monkeypatch.setattr(
-        server,
-        "_api_client",
-        DocuSealClient(
-            base_url="https://signature.example",
-            api_key="",
-            transport=httpx.MockTransport(reject_upstream),
-        ),
-    )
+    monkeypatch.setattr(server, "_mcp_client", object())
     test_mcp = FastMCP("Offline render test", streamable_http_path="/mcp")
     test_mcp.add_tool(server.render_template_documents)
     app = test_mcp.streamable_http_app()
@@ -292,87 +305,8 @@ def test_mcp_render_tool_works_without_rest_key_or_upstream_requests(monkeypatch
                     assert value["docx_url"].startswith(
                         "https://downloads.example.test/download?"
                     )
-
     asyncio.run(exercise())
+    assert server._artifact_store.root == tmp_path
 
-    assert requests == []
 
 
-def test_mcp_search_uses_mocked_native_mcp_without_rest_fallback(monkeypatch):
-    import docuseal_mcp
-
-    observed = {}
-
-    class UpstreamSession:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            return False
-
-        async def initialize(self):
-            return None
-
-        async def call_tool(self, name, arguments):
-            observed["call"] = (name, arguments)
-            return SimpleNamespace(
-                isError=False,
-                content=[SimpleNamespace(type="text", text='[{"id": 91, "name": "Mock NDA"}]')],
-            )
-
-    @asynccontextmanager
-    async def upstream_transport(url, *, http_client):
-        observed["url"] = url
-        observed["headers"] = http_client.headers.get("authorization")
-        yield object(), object(), "session"
-
-    monkeypatch.setattr(docuseal_mcp, "streamable_http_client", upstream_transport)
-    monkeypatch.setattr(docuseal_mcp, "ClientSession", lambda *args: UpstreamSession())
-    monkeypatch.setattr(server, "_mcp_client", docuseal_mcp.DocuSealMcpClient(
-        "https://native.example/mcp", "mock-only-bearer"
-    ))
-    monkeypatch.setenv("DOCUSEAL_API_KEY", "rest-key-must-not-be-used")
-
-    def reject_rest(request):
-        raise AssertionError("template search fell back to REST")
-
-    monkeypatch.setattr(server, "_api_client", DocuSealClient(
-        base_url="https://rest.example",
-        api_key="rest-key-must-not-be-used",
-        transport=httpx.MockTransport(reject_rest),
-    ))
-    from mcp.server.fastmcp import FastMCP
-
-    test_mcp = FastMCP("Native MCP search test", streamable_http_path="/mcp")
-    test_mcp.add_tool(server.search_templates)
-    app = test_mcp.streamable_http_app()
-
-    def client_factory(*, headers, timeout, auth):
-        return httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app),
-            headers=headers,
-            timeout=timeout,
-            auth=auth,
-        )
-    async def exercise():
-        async with app.router.lifespan_context(app):
-            async with streamablehttp_client(
-                "http://127.0.0.1:8000/mcp",
-                httpx_client_factory=client_factory,
-            ) as (read_stream, write_stream, _):
-                async with ClientSession(read_stream, write_stream) as session:
-                    await session.initialize()
-                    result = await session.call_tool(
-                        "search_templates", {"query": "NDA", "limit": 12}
-                    )
-                    assert not result.isError
-                    value = result.structuredContent
-                    if value is None:
-                        value = json.loads(result.content[0].text)
-                    assert value == {"data": [{"id": 91, "name": "Mock NDA"}]}
-    asyncio.run(exercise())
-    assert observed == {
-        "url": "https://native.example/mcp",
-        "headers": "Bearer mock-only-bearer",
-        "call": ("search_templates", {"q": "NDA", "limit": 12}),
-    }

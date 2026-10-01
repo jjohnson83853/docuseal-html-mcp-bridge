@@ -17,14 +17,13 @@ from mcp.server.fastmcp import FastMCP
 import uvicorn
 
 from artifact_server import create_artifact_app
-from docuseal_api import DocuSealClient
-from docuseal_mcp import DocuSealMcpClient
+from docuseal_mcp import DEFAULT_DOCUSEAL_URL, DocuSealMcpClient
 from document_export import ArtifactStore, RenderLimits, render_template_documents as render_documents
 
 
 class _JsonLogFormatter(logging.Formatter):
     fields = ("operation", "correlation_id", "upstream_host", "path", "status_code",
-              "duration_ms", "error_class", "format", "docuseal_api_key_configured")
+              "duration_ms", "error_class", "format")
 
     def format(self, record: logging.LogRecord) -> str:
         event = {"message": record.getMessage()}
@@ -32,6 +31,7 @@ class _JsonLogFormatter(logging.Formatter):
             if hasattr(record, field):
                 event[field] = getattr(record, field)
         return json.dumps(event, separators=(",", ":"))
+
 
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -42,14 +42,12 @@ for _handler in logging.getLogger().handlers:
     _handler.setFormatter(_JsonLogFormatter())
 
 logger = logging.getLogger(__name__)
-DOCUSEAL_URL = os.getenv("DOCUSEAL_URL", "https://signature.bullprog.com").rstrip("/")
-DOCUSEAL_API_KEY = os.getenv("DOCUSEAL_API_KEY", "")
-DOCUSEAL_MCP_URL = os.getenv("DOCUSEAL_MCP_URL", "https://signature.bullprog.com/mcp")
+DOCUSEAL_URL = os.getenv("DOCUSEAL_URL", DEFAULT_DOCUSEAL_URL)
 DOCUSEAL_MCP_BEARER_TOKEN = os.getenv("DOCUSEAL_MCP_BEARER_TOKEN", "")
 MCP_HOST = os.getenv("MCP_HOST", "127.0.0.1")
 MCP_PORT = 8000
 DEFAULT_ARTIFACT_ROOT = Path(tempfile.gettempdir()) / "docuseal-artifacts"
-SERVER_INSTRUCTIONS = """Render model-generated contract HTML to offline PDF and DOCX drafts for manual upload to DocuSeal. The exported files are not DocuSeal templates; users must manually place and verify fields in DocuSeal. Supported field elements are text-field, date-field, signature-field, initials-field, checkbox-field, radio-field, and select-field. Remaining tools query DocuSeal; template search uses native MCP credentials and other REST tools require DOCUSEAL_API_KEY. Sending a submission may email signers and requires explicit user authorization."""
+SERVER_INSTRUCTIONS = """Render model-generated contract HTML to offline PDF and DOCX drafts for manual upload to DocuSeal. The exported files are not DocuSeal templates; users must manually place and verify fields in DocuSeal. Supported field elements are text-field, date-field, signature-field, initials-field, checkbox-field, radio-field, and select-field. DocuSeal operations use its native MCP tools with server-side Bearer credentials. search_documents supports free-text search only; submission status lookup and template/status filters are unavailable. Sending a submission may email signers and requires explicit user authorization."""
 
 
 @dataclass(frozen=True)
@@ -90,6 +88,9 @@ def _positive_float(values: Mapping[str, str], name: str, default: float) -> flo
 
 def load_config(environ: Mapping[str, str] | None = None) -> ServerConfig:
     values = os.environ if environ is None else environ
+    DocuSealMcpClient._validated_url(
+        values.get("DOCUSEAL_URL", DEFAULT_DOCUSEAL_URL)
+    )
     raw_port = values.get("ARTIFACT_PORT", "8001")
     try:
         if not isinstance(raw_port, str) or not raw_port.isascii() or not raw_port.isdecimal():
@@ -131,10 +132,9 @@ def load_config(environ: Mapping[str, str] | None = None) -> ServerConfig:
     )
 
 
-mcp = FastMCP("DocuSeal REST bridge", instructions=SERVER_INSTRUCTIONS, host=MCP_HOST,
+mcp = FastMCP("DocuSeal native MCP bridge", instructions=SERVER_INSTRUCTIONS, host=MCP_HOST,
               port=MCP_PORT, streamable_http_path="/mcp")
-_api_client = DocuSealClient(DOCUSEAL_URL, DOCUSEAL_API_KEY)
-_mcp_client = DocuSealMcpClient(DOCUSEAL_MCP_URL, DOCUSEAL_MCP_BEARER_TOKEN)
+_mcp_client = DocuSealMcpClient(DOCUSEAL_URL, DOCUSEAL_MCP_BEARER_TOKEN)
 _artifact_store: ArtifactStore | None = None
 _render_limits = RenderLimits()
 
@@ -154,21 +154,21 @@ async def render_template_documents(template_name: str, html_content: str,
 
 @mcp.tool()
 async def search_templates(query: str = "", limit: int = 10) -> dict:
-    """Search templates by name using DocuSeal's native read-only MCP tool."""
+    """Search templates by name using DocuSeal's native MCP tool."""
     return await _mcp_client.search_templates(query, limit)
 
 
 @mcp.tool()
 async def get_template(template_id: int) -> dict:
-    """Retrieve one DocuSeal template by its numeric template ID, including its field schema."""
-    return await _api_client.get_template(template_id)
+    """Load one DocuSeal template using the native MCP operation."""
+    return await _mcp_client.load_template(template_id)
 
 
 @mcp.tool()
-async def list_submissions(template_id: int | None = None, status: str | None = None,
-                           query: str | None = None, limit: int = 10) -> dict:
-    """List submissions, optionally filtered by template ID, status, and search query."""
-    return await _api_client.list_submissions(template_id, status, query, limit)
+
+async def search_documents(q: str = "", limit: int = 10) -> dict:
+    """Search DocuSeal documents by free text; template and status filters are unavailable."""
+    return await _mcp_client.search_documents(q, limit)
 
 
 @mcp.tool()
@@ -176,14 +176,9 @@ async def send_submission(template_id: int, signer_email: str, signer_name: str,
                           signer_role: str = "Signer",
                           field_values: dict[str, Any] | None = None) -> dict:
     """Send a signing request for a template to one signer; this may send a real email."""
-    return await _api_client.send_submission(template_id, signer_email, signer_name,
-                                             signer_role, field_values)
-
-
-@mcp.tool()
-async def get_submission_status(submission_id: int) -> dict:
-    """Retrieve a submission by its numeric ID and return DocuSeal's current status."""
-    return await _api_client.get_submission_status(submission_id)
+    return await _mcp_client.send_documents(
+        template_id, signer_email, signer_name, signer_role, field_values
+    )
 
 
 async def _cleanup_artifacts(store: ArtifactStore) -> None:
@@ -230,12 +225,11 @@ async def run_servers(config: ServerConfig) -> None:
         await asyncio.gather(*tasks, return_exceptions=True)
         await asyncio.gather(cleanup_task, return_exceptions=True)
 
-
 def main() -> None:
     config = load_config()
-    logger.info("bridge_starting", extra={"operation": "startup",
-                                         "docuseal_api_key_configured": bool(os.getenv("DOCUSEAL_API_KEY"))})
+    logger.info("bridge_starting", extra={"operation": "startup"})
     asyncio.run(run_servers(config))
+
 
 
 if __name__ == "__main__":

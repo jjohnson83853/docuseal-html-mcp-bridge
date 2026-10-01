@@ -90,37 +90,48 @@ def run(coroutine):
 
 
 @pytest.mark.parametrize(
-    "url",
+    "origin",
     [
-        "https://mcp.example/mcp",
-        "http://localhost/mcp",
-        "http://127.0.0.1:8080/mcp",
-        "http://[::1]/mcp",
+        "https://mcp.example",
+        "https://mcp.example/",
+        "http://localhost",
+        "http://localhost:8080/",
+        "http://127.0.0.1",
+        "http://[::1]/",
     ],
 )
-def test_client_accepts_secure_and_loopback_urls(url):
-    client = docuseal_mcp.DocuSealMcpClient(url, "token")
+def test_client_derives_mcp_endpoint_from_origin(origin):
+    client = docuseal_mcp.DocuSealMcpClient(origin, "token")
 
-    assert client._url == url
+    assert client._url == origin.rstrip("/") + "/mcp"
 
 
 @pytest.mark.parametrize(
-    "url",
+    "origin",
     [
-        "http://mcp.example/mcp",
-        "/mcp",
-        "https:///mcp",
-        "https://user:password@mcp.example/mcp",
-        "https://mcp.example/mcp?token=secret",
-        "https://mcp.example/mcp?",
-        "https://mcp.example/mcp#fragment",
-        "https://mcp.example/mcp#",
-        "https://mcp.example:invalid/mcp",
+        "http://mcp.example",
+        "/",
+        "https:/// ",
+        "https://user:password@mcp.example",
+        "https://mcp.example/path",
+        "https://mcp.example/mcp",
+        "https://mcp.example?",
+        "https://mcp.example#",
+        "https://mcp.example:invalid",
+        "https://mcp.example:99999",
+        "https://[invalid]",
+        "https://",
+        "https://mcp.example:0",
+        "https://mcp.example:65536",
+        "https://mcp.example:443/path",
+        "https://mcp.example/?",
+        "https://mcp.example/#",
+        "http://[2001:db8::1]",
     ],
 )
-def test_client_rejects_unsafe_urls(url):
-    with pytest.raises(ValueError, match="DOCUSEAL_MCP_URL"):
-        docuseal_mcp.DocuSealMcpClient(url, "token")
+def test_client_rejects_unsafe_origins(origin):
+    with pytest.raises(ValueError, match="DOCUSEAL_URL"):
+        docuseal_mcp.DocuSealMcpClient(origin, "token")
 
 
 def test_search_maps_query_and_limit_and_returns_only_documented_fields(monkeypatch):
@@ -129,7 +140,7 @@ def test_search_maps_query_and_limit_and_returns_only_documented_fields(monkeypa
         result_with_text(json.dumps([{"id": 7, "name": "NDA", "slug": "discard"}])),
     )
     client = docuseal_mcp.DocuSealMcpClient(
-        "https://mcp.example/mcp", "unit-test-secret"
+        "https://mcp.example", "unit-test-secret"
     )
 
     response = run(client.search_templates("non-disclosure", 23))
@@ -139,16 +150,29 @@ def test_search_maps_query_and_limit_and_returns_only_documented_fields(monkeypa
     ]
     assert transport.url == "https://mcp.example/mcp"
     assert clients[0].headers == {"Authorization": "Bearer unit-test-secret"}
-    assert clients[0].timeout == 20.0
     assert response == {"data": [{"id": 7, "name": "NDA"}]}
     assert "unit-test-secret" not in repr(response)
     assert clients[0].closed and transport.closed
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        None,
+        SimpleNamespace(isError=False, content=[]),
+    ],
+)
+def test_rejects_malformed_or_failed_native_results(monkeypatch, result):
+    configure(monkeypatch, result)
+    client = docuseal_mcp.DocuSealMcpClient("https://mcp.example", "token")
+
+    with pytest.raises(docuseal_mcp.DocuSealMcpError):
+        run(client.search_templates())
 
 
 @pytest.mark.parametrize("limit", [1, 100])
 def test_search_accepts_limit_boundaries(monkeypatch, limit):
     transport, _ = configure(monkeypatch, result_with_text("[]"))
-    client = docuseal_mcp.DocuSealMcpClient("https://mcp.example/mcp", "token")
+    client = docuseal_mcp.DocuSealMcpClient("https://mcp.example", "token")
 
     assert run(client.search_templates(limit=limit)) == {"data": []}
     assert transport.session.calls == [
@@ -159,7 +183,7 @@ def test_search_accepts_limit_boundaries(monkeypatch, limit):
 @pytest.mark.parametrize("limit", [0, 101, True, "10"])
 def test_search_rejects_invalid_limit_before_connecting(monkeypatch, limit):
     transport, _ = configure(monkeypatch, result_with_text("[]"))
-    client = docuseal_mcp.DocuSealMcpClient("https://mcp.example/mcp", "token")
+    client = docuseal_mcp.DocuSealMcpClient("https://mcp.example", "token")
 
     with pytest.raises(ValueError, match="between 1 and 100"):
         run(client.search_templates(limit=limit))
@@ -168,13 +192,28 @@ def test_search_rejects_invalid_limit_before_connecting(monkeypatch, limit):
 
 def test_missing_token_has_named_safe_error_without_connecting(monkeypatch):
     transport, _ = configure(monkeypatch, result_with_text("[]"))
-    client = docuseal_mcp.DocuSealMcpClient("https://mcp.example/mcp", "")
+    client = docuseal_mcp.DocuSealMcpClient("https://mcp.example", "")
 
     with pytest.raises(
         docuseal_mcp.DocuSealMcpError, match="DOCUSEAL_MCP_BEARER_TOKEN"
     ):
         run(client.search_templates())
     assert transport.url is None
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        None,
+        SimpleNamespace(isError=False, content=[]),
+        SimpleNamespace(isError=False, content=[SimpleNamespace(type="text", text="{}")]),
+    ],
+)
+def test_search_rejects_malformed_native_results(monkeypatch, result):
+    configure(monkeypatch, result)
+    client = docuseal_mcp.DocuSealMcpClient("https://mcp.example", "token")
+
+    with pytest.raises(docuseal_mcp.DocuSealMcpError):
+        run(client.search_templates())
 
 @pytest.mark.parametrize(
     "result",
@@ -194,7 +233,7 @@ def test_missing_token_has_named_safe_error_without_connecting(monkeypatch):
 def test_rejects_failed_or_malformed_results_without_upstream_text(monkeypatch, result):
     secret_text = "private-upstream-diagnostic"
     transport, _ = configure(monkeypatch, result)
-    client = docuseal_mcp.DocuSealMcpClient("https://mcp.example/mcp", "unit-test-secret")
+    client = docuseal_mcp.DocuSealMcpClient("https://mcp.example", "unit-test-secret")
 
     with pytest.raises(docuseal_mcp.DocuSealMcpError) as error:
         run(client.search_templates())
@@ -206,7 +245,7 @@ def test_error_result_does_not_expose_upstream_text(monkeypatch):
     private_message = "private-upstream-diagnostic"
     configure(monkeypatch, result_with_text(private_message, is_error=True))
     client = docuseal_mcp.DocuSealMcpClient(
-        "https://mcp.example/mcp", "unit-test-secret"
+        "https://mcp.example", "unit-test-secret"
     )
 
     with pytest.raises(docuseal_mcp.DocuSealMcpError) as error:
@@ -221,11 +260,11 @@ def test_transport_error_is_safe_and_does_not_log_secret_or_detail(monkeypatch, 
         monkeypatch,
         error=RuntimeError("unit-test-secret private-upstream-diagnostic"),
     )
-    client = docuseal_mcp.DocuSealMcpClient("https://mcp.example/mcp", "unit-test-secret")
+    client = docuseal_mcp.DocuSealMcpClient("https://mcp.example", "unit-test-secret")
 
     with pytest.raises(docuseal_mcp.DocuSealMcpError, match="Could not reach") as error:
         run(client.search_templates())
-    assert error.value.__context__ is None
+    assert error.value.__suppress_context__
 
     assert "unit-test-secret" not in str(error.value)
     assert "private-upstream-diagnostic" not in str(error.value)
@@ -235,9 +274,76 @@ def test_transport_error_is_safe_and_does_not_log_secret_or_detail(monkeypatch, 
 
 def test_cancellation_propagates_and_closes_session(monkeypatch):
     transport, _ = configure(monkeypatch, error=asyncio.CancelledError())
-    client = docuseal_mcp.DocuSealMcpClient("https://mcp.example/mcp", "token")
+    client = docuseal_mcp.DocuSealMcpClient("https://mcp.example", "token")
 
     with pytest.raises(asyncio.CancelledError):
         run(client.search_templates())
 
     assert transport.closed
+
+def test_send_cancellation_after_dispatch_is_unknown_without_retry(monkeypatch):
+    transport, _ = configure(monkeypatch, error=asyncio.CancelledError())
+    client = docuseal_mcp.DocuSealMcpClient("https://mcp.example", "unit-test-secret")
+
+    with pytest.raises(docuseal_mcp.DocuSealMcpError) as error:
+        run(
+            client.send_documents(
+                42, "signer@example.test", "Ada", "Signer", field_values=None
+            )
+        )
+
+    assert "unknown" in str(error.value).lower()
+    assert "inspect" in str(error.value).lower()
+    assert "resend" in str(error.value).lower()
+    assert "unit-test-secret" not in str(error.value)
+    assert len(transport.session.calls) == 1
+    assert transport.closed
+def test_send_failure_is_outcome_unknown_without_retry_or_sensitive_details(
+    monkeypatch, caplog
+):
+    transport, _ = configure(
+        monkeypatch,
+        error=RuntimeError("unit-test-secret private-upstream-diagnostic"),
+    )
+    client = docuseal_mcp.DocuSealMcpClient(
+        "https://mcp.example", "unit-test-secret"
+    )
+
+    with pytest.raises(docuseal_mcp.DocuSealMcpError) as error:
+        run(
+            client.send_documents(
+                42, "signer@example.test", "Ada", "Signer", {"Name": 23}
+            )
+        )
+
+    message = str(error.value).lower()
+    assert "unknown" in message
+    assert "inspect" in message
+    assert "resend" in message
+    assert "unit-test-secret" not in str(error.value)
+    assert "private-upstream-diagnostic" not in str(error.value)
+    assert "unit-test-secret" not in caplog.text
+    assert len(transport.session.calls) == 1
+    assert transport.session.calls[0][0] == "send_documents"
+
+def test_send_native_error_is_outcome_unknown_without_sensitive_details(monkeypatch):
+    private_message = "private-upstream-diagnostic"
+    transport, _ = configure(
+        monkeypatch, result=result_with_text(private_message, is_error=True)
+    )
+    client = docuseal_mcp.DocuSealMcpClient("https://mcp.example", "unit-test-secret")
+
+    with pytest.raises(docuseal_mcp.DocuSealMcpError) as error:
+        run(
+            client.send_documents(
+                42, "signer@example.test", "Ada", "Signer", field_values=None
+            )
+        )
+
+    message = str(error.value).lower()
+    assert "unknown" in message
+    assert "inspect" in message
+    assert "resend" in message
+    assert private_message not in str(error.value)
+    assert "unit-test-secret" not in str(error.value)
+    assert len(transport.session.calls) == 1
