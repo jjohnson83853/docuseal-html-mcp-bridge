@@ -1,148 +1,126 @@
 # SpecDD: Proxy DocuSeal Native MCP Through the Bridge
 
-**Status:** Approved implementation complete; full suite and mocked bridge MCP smoke pass; code, Python, and security reviews pass. No live upstream request, deployment, image build, or registry push was performed.
+**Status:** DRAFT scope revision — Revision 2 (two-variable, native-MCP-only). Not approved; no code, no commit, no tests run, no live DocuSeal contact for this revision.
 **Created:** 2026-09-30
-**Refined:** 2026-09-30 (design/tasks grounded in repo facts; sequencing made explicit)
+**Revised:** 2026-10-01 (scope change: exactly two DocuSeal env values; all retained DocuSeal operations routed through native MCP)
 **Related plan:** `.omp/plans/docuseal-html-export-links.md`
 
-## 1. Requirements
+## 1. Scope-Change Summary
 
-### Goal
+The user directed: *"Collapse these 4 values into 2."* Revision 1 (search-only) is superseded. The bridge must behave like LibreChat's native-DocuSeal integration: one origin plus one credential, with every retained DocuSeal operation served by the native MCP server at `<origin>/mcp`. The REST `X-Auth-Token` client (`docuseal_api.py`) and its configuration are removed, not re-pointed.
 
-Make LibreChat use the private DocuSeal bridge as its only DocuSeal MCP endpoint, while the bridge calls the user's native DocuSeal MCP server server-to-server. Template search must work through the bridge using the native MCP Bearer credential; LibreChat must not connect directly to DocuSeal.
+### Configuration contract — exactly two DocuSeal values
 
-### User direction
+| Env value | Meaning | Becomes |
+|---|---|---|
+| `DOCUSEAL_URL` | Base DocuSeal origin (e.g. `https://signature.bullprog.com`) | **Kept.** Bridge derives the MCP endpoint as `{DOCUSEAL_URL}/mcp`. Same HTTPS/loopback validation rules as today; derivation rejects fragments/credentials/query. |
+| `DOCUSEAL_API_KEY` | REST `X-Auth-Token` API key | **Removed** — all call sites, `.env.example`, `docker-compose.yml`, README, and startup logging. |
+| `DOCUSEAL_MCP_URL` | Explicit `/mcp` endpoint | **Removed** — redundant because REST and MCP share the same origin in this deployment. |
+| `DOCUSEAL_MCP_BEARER_TOKEN` | Native MCP `Authorization: Bearer` token | **Kept.** Server-side only; never logged, returned, or handed to render workers. Not reused as a REST key. |
 
-- Direct LibreChat-to-DocuSeal MCP is out of bounds; requests must flow through this bridge.
-- User supplied a temporary Bearer token for a one-time diagnostic. Never store it in the repository or reuse it after the diagnostic.
-- The native DocuSeal MCP endpoint is `https://signature.bullprog.com/mcp`.
+One Bearer token in one auth scheme. The MCP Bearer is never treated as `X-Auth-Token`; no fallback between schemes.
 
-### Observed evidence
+## 2. Requirements
 
-- Direct Streamable HTTP MCP to `/mcp` with `Authorization: Bearer` negotiated protocol `2025-11-25`; `search_templates` called with `q=""` returned six template IDs/names.
-- The same temporary token sent as `X-Auth-Token` to `GET /api/templates` returned HTTP 401 `Not authenticated` through Caddy.
-- This bridge currently exposes its own Streamable HTTP MCP endpoint at port 8000 `/mcp`; its `search_templates(query, limit)` currently calls the REST adapter, which sends `X-Auth-Token` to `/api/templates`.
-- The repository pins `mcp==1.16.0`. Its client rejected the native server's protocol `2025-11-25`; official Python SDK notes identify `mcp==1.23.1` as the protocol minimum and `mcp==1.24.0` as the minimum for the injectable `http_client` API. This plan selects `mcp==1.30.0` on the v1 line.
-- LibreChat logs did not capture the 09:23 request target; the user's report that the template lookup succeeded is accepted as ground truth.
-- The REST adapter's caller-facing result envelope is `{"data": [records], "pagination": {count, next}}`; limit is validated 1–100 at the boundary.
-- Official DocuSeal self-hosted MCP documentation states `search_templates` requires `q`, accepts optional `limit` (default 10, maximum 100), and returns matching template IDs and names.
+### User direction (Revision 2)
 
-### Scope
+- Exactly two DocuSeal env values remain: `DOCUSEAL_URL` and `DOCUSEAL_MCP_BEARER_TOKEN`.
+- All retained DocuSeal operations must use the native MCP tools; no REST adapter path survives the cutover.
+- No new upstream write tools beyond what is needed to preserve existing behavior: `create_template` is **not** exposed.
 
-**Draft in scope**
-- Keep LibreChat connected only to `http://docuseal-mcp-bridge:8000/mcp`.
-- Route the existing bridge `search_templates` tool through the upstream native MCP `search_templates` tool with Bearer authentication.
-- Keep the bridge's existing tool name and caller-facing inputs; translate `query` to upstream `q` and pass the validated `limit` because the official native tool documentation advertises it.
-- Keep the offline `render_template_documents` tool local and independent of DocuSeal credentials.
-- Keep other currently exposed bridge REST-backed operations unchanged unless separately approved; do not expose upstream `create_template` or other new write tools in this change.
-- Add server-side `DOCUSEAL_MCP_URL` and `DOCUSEAL_MCP_BEARER_TOKEN` configuration; never log or return the token.
-- Upgrade/pin the MCP SDK to a v1 release that supports protocol `2025-11-25` and authenticated Streamable HTTP clients.
-- Mock all remote MCP interactions in tests; no live DocuSeal request or signer email in verification.
+### Hard rules
 
-**Out of scope**
-- Direct LibreChat-to-DocuSeal MCP access as the resolution.
-- Changing the artifact renderer, artifact links, Caddy routes, or deployment.
-- Proxying upstream template creation or document-sending tools.
-- Replacing every REST-backed bridge operation unless approved as a separate requirement.
+- Do not silently preserve unsupported contracts. Where the native MCP tool set does not document a parameter or capability the bridge tool advertised, the bridge tool is reshaped to the documented contract or removed — never approximated with fabricated behavior.
+- Do not contact DocuSeal or run live requests in this revision. Mock everything in tests.
+- Clean cutover: `docuseal_api.py`, its tests, and every `DOCUSEAL_API_KEY`/`DOCUSEAL_MCP_URL` reference are deleted when the last consumer is migrated; no shims, no dual-path config.
 
-### Invariants
+## 3. Tool-by-Tool Mapping
 
-- All DocuSeal MCP calls made for this feature originate from the bridge; LibreChat targets only the bridge.
-- The Bearer token is server-side only; it never reaches renderer workers, tool output, exceptions, or logs.
-- Existing downstream `search_templates` tool name remains available; failures remain safe and do not leak upstream response bodies or credentials.
-- A missing MCP token or unavailable upstream must not prevent local PDF/DOCX export or bridge startup; only the upstream-backed search fails safely.
-- Existing REST-backed tools remain unchanged in this draft; a native MCP Bearer token is not treated as a REST `X-Auth-Token` API key.
+Current bridge tools and their Revision-2 disposition (current routing: `server.py:155-186`; REST client: `docuseal_api.py:67-131`):
 
-## 2. Design
+| Bridge tool today | Current backend | Native MCP tool (documented inputs) | Disposition |
+|---|---|---|---|
+| `search_templates(query, limit)` | native MCP `search_templates` (already) | `search_templates(q, limit)` | **Unchanged.** Already correct; only the URL derivation changes. |
+| `get_template(template_id)` | REST `_api_client.get_template` | `load_template(template_id)` | **Re-route to native MCP.** Same caller-facing input (`template_id: int`); returns template with field schema. Response-shape translation (REST record → MCP result content) to be grounded in the official guide's documented output before implementation; no invented fields. |
+| `list_submissions(template_id?, status?, query?, limit)` | REST `_api_client.list_submissions` | `search_documents(q, limit)` | **Reshaped.** Native tool documents only `q` and `limit`. Template-ID, status, and free-text query filters have no documented native equivalent. See §4. |
+| `send_submission(template_id, signer_email, signer_name, signer_role, field_values?)` | REST `_api_client.send_submission` | `send_documents(template_id, submitters)` | **Re-route to native MCP.** Caller-facing intent preserved (one signing request for one signer); map `field_values` to the documented `fields: [{name, value}]` array. The operation may send a real email. If timeout/transport loss occurs after the tool call was dispatched, return a safe outcome-unknown error, never retry automatically, and tell the caller to inspect DocuSeal before resending. |
+| `get_submission_status(submission_id)` | REST `_api_client.get_submission_status` | none documented | **Removed.** No native tool or documented parameter fetches a submission by ID. See §4. |
+| `render_template_documents` | local/offline | n/a | **Unchanged.** No DocuSeal credential, works with both new values unset. |
 
-### Upstream adapter — new file `docuseal_mcp.py`
+Not exposed: `create_template` (upstream write tool, no user approval).
 
-- `DocuSealMcpClient.search_templates(query: str = "", limit: int = 10)` mirrors the REST adapter's signature so `server.py` routing stays a one-line swap for that tool only.
-- Uses the official SDK v1 Streamable HTTP client (`streamablehttp_client` + `ClientSession`) with an injected `httpx.AsyncClient` carrying `Authorization: Bearer <DOCUSEAL_MCP_BEARER_TOKEN>` (injectable client API exists since mcp 1.24.0). Never uses `X-Auth-Token`.
-- Session lifecycle: one open/close pair per `search_templates` call. No connection pool, no retry, no speculative keep-alive. A named constant bounds the total per-call timeout (default 20 s, matching the REST client's submission deadline style).
-- Require a successful MCP `CallToolResult` (`isError` is false) with one text content block containing a JSON array of template records. Each record must contain an integer `id` and string `name`; an empty array is a valid no-match response. Return `{"data": [...]}` with only documented `id` and `name` fields; DocuSeal does not document pagination for this tool, so do not add a `pagination` object.
-- Treat `isError`, missing/multiple/non-text content, invalid JSON, or invalid records as safe typed errors; do not include upstream response text, body, or token in error details.
+## 4. Unsupported Semantics — Analysis and Recommendation
 
-### Routing — edit `server.py`
+Two REST-backed capabilities lack a documented native MCP equivalent:
 
-- After cutover, `search_templates` always calls the upstream MCP client; there is no configuration-dependent REST path or fallback. Missing token → bridge startup stays healthy; search raises a safe error naming the missing variable and never invokes REST.
-- Validate `limit` 1–100 at the boundary exactly as `_validate_limit` does, and pass both `q=query` and `limit=limit` upstream; the official self-hosted MCP guide documents both parameters.
+1. **Filtered submission listing.** `list_submissions` accepts `template_id`, `status`, and `query` filters. Native `search_documents` documents only `q` (free text) and `limit`. There is no documented way to filter by template ID or status upstream.
+2. **Submission status by ID.** `get_submission_status(submission_id)` fetches a specific submission. No documented native tool or parameter performs a by-ID submission lookup.
 
-### Configuration
+### Options
 
-- `DOCUSEAL_MCP_URL` defaults to `https://signature.bullprog.com/mcp`; override for other native endpoints.
-- `DOCUSEAL_MCP_BEARER_TOKEN` is read at bridge process startup and held only in server memory. It is never passed to child render workers, never logged, never returned in tool output, exceptions, or metrics.
+- **Option A — Remove unsupported tools; keep documented-only shapes (RECOMMENDED).** Delete `get_submission_status` outright. Replace `list_submissions` with a new `search_submissions(q, limit)` tool backed by native `search_documents`, with the same `{"data": [...]}` envelope and 1–100 limit rule as `search_templates`. LibreChat callers using removed tools get a clear "tool not available" instead of degraded silent behavior.
+- **Option B — Keep both REST tools and keep `DOCUSEAL_API_KEY`.** Satisfies none of the user's directive; rejected.
+- **Option C — Keep tool names and silently map `template_id`/`status` filters into `q` text.** Fabricates unsupported upstream semantics; produces results that look like filtered output but are not. Rejected as dishonest interface behavior.
+- **Option D — Keep `list_submissions`/`get_submission_status` as no-ops or stubs.** Violates no-stub delivery rules. Rejected.
 
-### SDK pin
+### Why Option A is conservative
 
-- `requirements.txt`: `mcp==1.16.0` → selected v1 pin `mcp==1.30.0` (protocol `2025-11-25` supported since 1.23.1; injectable authenticated `http_client` since 1.24.0). No migration to MCP v2.
+It preserves every capability the native server actually documents, removes nothing that has a native equivalent, and makes the two losses explicit and user-approved rather than hidden. If the user later needs by-ID status or filtered listing, that is a separate decision (e.g., confirm upstream additions), not part of this scope.
 
-### Verification design
+### Caller-visible behavior changes (Option A)
 
-- New `tests/test_docuseal_mcp.py` mocks Streamable HTTP/MCP session behavior (pattern: existing `httpx.MockTransport` and in-process MCP client tests): assert the bridge calls only the read-only upstream `search_templates` tool, maps `query` to `q`, forwards the validated `limit`, and returns only the normalized `id`/`name` records.
-- Cover missing token, upstream `isError`, transport failure, malformed/missing/multiple content, invalid records, and cancellation; assert the token and raw upstream content never appear in errors, logs, or results.
-- Extend `tests/test_server_runtime.py` and `tests/test_mcp_e2e.py` minimally to confirm the bridge always routes search through native MCP (including missing-token failure while a REST API key exists) and that the local render tool works with no DocuSeal credentials; existing REST-backed tool contract tests stay untouched.
-- Smoke the bridge MCP endpoint with a mocked upstream; a live upstream smoke requires a fresh explicitly issued test credential and operator authorization. No Docker registry push or deployment is part of this work.
+- `get_submission_status` disappears from the bridge tool list; attempts return a safe not-available error.
+- `list_submissions` disappears; its replacement `search_submissions(q, limit)` returns free-text matches only. No `template_id`/`status` parameters exist on the new tool.
+- `send_submission` keeps its name and inputs but runs upstream MCP; a malformed signer payload fails safely before any email effect, to the extent the documented upstream contract allows validation.
+- `get_template` keeps its name and input; response fields are only those the documented MCP output provides.
 
-## 3. Acceptance Criteria
+## 5. Design (delta from Revision 1)
 
-- **AC-001 — Bridge-only caller route:** LibreChat's configured target remains the bridge MCP endpoint; a bridge `search_templates` call then uses server-side Streamable HTTP to the configured native DocuSeal MCP endpoint. No direct LibreChat-to-DocuSeal request is required.
-- **AC-002 — Bearer authentication:** The upstream call uses `Authorization: Bearer <DOCUSEAL_MCP_BEARER_TOKEN>` and never `X-Auth-Token`; tests inspect the header only in isolated mocks and assert it is absent from logs/errors/results.
-- **AC-003 — Template lookup contract:** An empty query returns the upstream template list; a nonempty query maps to `q`; the bridge applies the approved envelope and limit rule without inventing totals or pagination.
-- **AC-004 — Failure isolation:** Missing token, upstream auth rejection, unavailable upstream, malformed response, and cancellation produce bounded safe errors; rendering and bridge startup remain available.
-- **AC-005 — Regression/security:** Existing REST-backed tool contracts and offline export behavior remain unchanged; no direct/upstream write tool is exposed; full suite coverage remains at least 90%.
+- `docuseal_mcp.py` keeps the per-call Streamable HTTP session lifecycle, Bearer-only auth, safe `CallToolResult` decoding, URL validation, and redaction guarantees; it gains `load_template`, `send_documents`, and `search_documents` methods mirroring documented native inputs, plus `/mcp` derivation from the base origin.
+- `server.py` routes all four retained DocuSeal tools through `_mcp_client`; `_api_client` and the `DOCUSEAL_API_KEY`/`DOCUSEAL_MCP_URL` globals are deleted; `SERVER_INSTRUCTIONS` and startup logging drop REST-key references.
+- Configuration: `DOCUSEAL_URL` must be a base origin with no path except `/`; derive `{origin}/mcp`; keep `DOCUSEAL_MCP_BEARER_TOKEN`. Validate HTTPS except loopback HTTP, no credentials/query/fragment, at startup.
+- Envelope/limit rules stay as approved in Revision 1: validate 1–100 limits at the boundary, never fabricate pagination or totals, and return only fields documented for each native tool.
+- The `send_submission` adapter must distinguish an explicit upstream tool error from an unknown outcome after a dispatched call loses its response. It never retries; the user-facing error directs operators to check DocuSeal before resending.
+- SDK pin remains `mcp==1.30.0` (v1 line, protocol `2025-11-25`).
+- Docs: `.env.example`, `docker-compose.yml`, and README rewritten for the two-variable contract; README explains LibreChat-parity behavior and which tools were removed and why.
 
-## 4. Tasks
+## 6. Implementation Task List (gated — not started)
 
-**Phase A — approvals (no code):**
+1. **Design approval (user checkpoint 1).** Confirm exactly-two-variable contract, Option A removals, `create_template` non-exposure, and the `get_template`/`send_submission` payload-translation approach grounded in the official guide. *Acceptance:* approval recorded in the ledger.
+2. **Task-list approval (user checkpoint 2).** Critic/Saved-Task-List review of this revision, then final task approval. *Acceptance:* reviews PASS and approval recorded; gate reopens only after this.
+3. **Tests first (RED).** Extend `tests/test_docuseal_mcp.py` and routing tests (`test_server_runtime.py`, `test_mcp_e2e.py`): origin-to-`/mcp` derivation and invalid-origin rejection, per-tool native invocation/input mapping/result decoding, removed-tool errors, startup/render with bearer unset, absence of REST requests/`X-Auth-Token`, token redaction, cancellation, and `send_submission` unknown outcome after dispatch without retry. *Acceptance:* new tests fail for the right reason.
+4. **Implement (GREEN).** Extend `docuseal_mcp.py`; re-route all retained tools in `server.py`; delete `docuseal_api.py` and all removed-variable references (`.env.example`, `docker-compose.yml`, README, `SERVER_INSTRUCTIONS`, startup log). *Acceptance:* RED tests GREEN; no REST client code remains; `render_template_documents` untouched.
+5. **Docs and configuration.** Update `.env.example` (two DocuSeal values), `docker-compose.yml` (drop `DOCUSEAL_API_KEY`; remove `DOCUSEAL_MCP_URL`), README (two-var contract, tool changes, removal rationale). *Acceptance:* docs match shipped behavior; no secrets in examples.
+6. **Verification and reviews.** Focused tests, then full suite with ≥90% coverage and mocked bridge MCP smoke covering every retained DocuSeal tool. Code, Python, and security reviews (secret handling mandatory). No live upstream request, Docker build, deployment, or registry push without separate authorization. *Acceptance:* suite green at ≥90% coverage; reviews PASS; no live contact.
+7. **Commit and push** after approval. *Acceptance:* conventional commit; ledger updated.
 
-1. **Requirements approval (user checkpoint 1).** Confirm scope is the existing `search_templates` tool only (recommended; all other bridge operations unchanged) and approve the result-envelope/limit contract above. *Acceptance:* approval recorded in the ledger.
-2. **Design approval (user checkpoint 2).** Confirm the adapter design, SDK pin (`mcp==1.30.0`, stay on v1), configuration names, per-call session lifecycle, no-fallback rule, and unchanged downstream surface. *Acceptance:* approval recorded.
-3. **Critic reviews then task-list approval (user checkpoint 3).** Run the SpecDD review and the saved task-list review; record verdicts; present the final task list for approval. *Acceptance:* both critic verdicts and user approval recorded; the authoritative DocuSeal schema and concrete result-decoding contract above are fixed before any implementation dispatch.
+## 7. Acceptance Criteria (observable)
 
-**Phase B — implementation (gated; only after Phase A):**
+- **AC-R2-001 — Two-variable configuration:** The bridge starts and serves all tools with only `DOCUSEAL_URL` and `DOCUSEAL_MCP_BEARER_TOKEN` set. Active application/runtime configuration defines only those two DocuSeal values; `.env.example`, Compose, and README expose only them. Historical SpecDD text may name retired variables to document the cutover. Verify with targeted source/config searches and a mocked startup with exactly the two values.
+- **AC-R2-002 — Derived endpoint:** The MCP endpoint is `{DOCUSEAL_URL}/mcp`; malformed/unsafe origins (HTTP non-loopback, credentials, query, fragment) fail at startup with a safe error. Verify with mocked client tests over invalid-origin fixtures.
+- **AC-R2-003 — MCP-only routing:** Each retained DocuSeal tool calls exactly its documented native tool (`search_templates`, `load_template`, `send_documents`, `search_documents`) with Bearer auth and documented inputs; no request carries `X-Auth-Token`. Verify in mocks asserting tool name, arguments, and header per call.
+- **AC-R2-004 — Unsupported behavior removed:** `get_submission_status` and `list_submissions` are absent; `search_submissions(q, limit)` replaces listing without template-ID/status parameters; removed names are not advertised. Verify via MCP tool discovery and tool-call tests.
+- **AC-R2-005 — No new write tools:** `create_template` is not exposed; `send_submission` remains the only bridge tool that can send email. Verify via tool discovery.
+- **AC-R2-006 — Ambiguous send outcome:** If `send_documents` was dispatched and the connection times out before a result, return a safe outcome-unknown error, do not retry, and instruct the caller to inspect DocuSeal before resending. Verify with a mocked post-dispatch disconnect and assert one upstream call.
+- **AC-R2-007 — Failure isolation and redaction:** Missing token affects only DocuSeal-backed tools; rendering and startup stay healthy; token and upstream bodies never appear in errors, logs, or results. Verify with redaction and startup-isolation tests.
+- **AC-R2-008 — Regression:** Offline export behavior unchanged; full suite ≥90% coverage; no live DocuSeal request occurred.
 
-4. **SDK pin update.** Bump `requirements.txt` to `mcp==1.30.0`; confirm the v1 Streamable HTTP and injectable-client APIs import cleanly in the dev environment. *Acceptance:* pin updated, imports verified, no v2 packages introduced.
-5. **Tests first (RED).** Write `tests/test_docuseal_mcp.py` covering: query→`q` and limit forwarding, Bearer header present in mock only, documented CallToolResult text-JSON decoding, valid empty results, malformed/error result rejection, missing token, upstream transport failure, cancellation, and token/redaction assertions. Add minimal routing checks in `test_server_runtime.py` and `test_mcp_e2e.py`. Run the new tests and confirm they fail for the right reason. *Acceptance:* RED confirmed.
-6. **Implement (GREEN).** Add `docuseal_mcp.py`; edit `server.py` so `search_templates` always routes through the MCP client with startup-time config read and no REST fallback; keep `docuseal_api.py` and all other tools untouched. Re-run the exact new tests to green. *Acceptance:* RED tests GREEN; `render_template_documents` and REST tools unchanged.
-7. **Docs and configuration.** Update `.env.example` with `DOCUSEAL_MCP_URL`/`DOCUSEAL_MCP_BEARER_TOKEN`; update README to distinguish the native MCP Bearer from REST `DOCUSEAL_API_KEY`, document query/limit behavior, and note the scope (search-only); keep secrets out of examples. *Acceptance:* docs consistent with shipped behavior.
-8. **Verification and reviews.** Run focused tests, then the full suite with ≥90% coverage, and a mocked bridge MCP smoke. Complete code, Python, and security reviews (secret handling is a mandatory security check). A live upstream test is optional and requires a fresh operator-issued token; never reuse the earlier temporary token. Before any live upstream smoke or deployment, confirm that the earlier shared temporary token has been revoked/rotated; record status only, never the token. *Acceptance:* suite green at ≥90% coverage; reviews recorded; no live request without separate authorization.
-9. **Commit and push** the verified implementation. No image build/push or deployment without separate authorization. *Acceptance:* committed per conventional-commit format; ledger updated.
+## 8. Approval Ledger
 
-## 5. Confirmed Decisions
+### Revision 2 (this document)
 
-- **Scope:** route only `search_templates` through native MCP; preserve all other REST-backed tools and offline rendering; add no upstream write tools.
-- **Default endpoint:** `DOCUSEAL_MCP_URL` defaults to `https://signature.bullprog.com/mcp` and supports an override.
+- Requirements/scope: **PENDING user approval** — exactly two DocuSeal env values (`DOCUSEAL_URL`, `DOCUSEAL_MCP_BEARER_TOKEN`); MCP-only operations; Option A removals; no `create_template`.
+- Design/tasks: **PENDING user approval.**
+- Implementation gate: **CLOSED/RESET on 2026-10-01.** Reopens only after checkpoints 1–2 above are recorded.
 
-## 6. Approval Ledger
+### Revision 1 records — SUPERSEDED 2026-10-01
 
-### User checkpoints
-- Requirements: APPROVED by user on 2026-09-30 — route only `search_templates` through native MCP; keep other REST tools and offline rendering unchanged; expose no upstream write tools; forward query/limit; return only template `id`/`name` records in `data` without fabricated pagination.
-- Design: APPROVED by user on 2026-09-30 — authenticated per-call MCP v1 adapter, SDK `1.30.0`, server-side URL/Bearer configuration, no retries/pool or REST fallback, safe CallToolResult decoding/errors, startup/render isolation, prior-token rotation before any live smoke/deployment.
-- Tasks: APPROVED by user on 2026-09-30 — SDK pin, RED-first mocked tests, search-only MCP adapter/routing, documentation, full verification/reviews, then commit/push; no live request/deployment or registry write.
+- Requirements, Design, and Tasks approvals of 2026-09-30 covered search-only scope with four remaining REST tools and four env values. **Superseded** by this revision; they do not authorize Revision-2 work.
+- Critic reviews (SpecDD, task-list) of 2026-09-30 applied to Revision 1 only; **reset** for Revision 2.
+- The Revision-1 implementation gate (opened 2026-09-30) is **closed by this revision**; no Revision-2 implementation is authorized until the new approvals land.
 
-### Critic reviews — complete
-- SpecDD review: PASS — exact amendments applied; no remaining findings (2026-09-30).
-- Saved task-list review: PASS — reviewed with SpecDD; no remaining findings (2026-09-30).
+## 9. References
 
-### Implementation gate
-- OPENED on 2026-09-30 after critic reviews and all three user checkpoints were recorded. No `.superpowers/sdd/*/progress.md` workspace exists, so no `GATE_OPEN` marker applies.
-
-## 7. Implementation and Verification Results
-
-- Implemented the approved native MCP search adapter, configuration, SDK pin, documentation, result validation, HTTPS/loopback URL validation, and regression tests. Other REST-backed tools and offline rendering remain unchanged.
-- RED evidence: the new adapter tests initially failed collection because `docuseal_mcp` did not yet exist; the empty-query/fragment URL regression tests failed before the validator fix and passed afterward.
-- Focused adapter tests: **34 passed**. Full suite: **206 passed, 2 skipped**, **91.33% total source coverage** (90% required); `docuseal_mcp.py` coverage **100%**.
-- Mocked bridge MCP search smoke: **1 passed**. It exercised the bridge MCP endpoint, upstream query/limit mapping and Bearer header using a mocked upstream; no live DocuSeal request was made.
-- Final code, Python, and security reviews: **PASS**, no remaining findings. The initial security and typing findings were fixed; review also closed the empty query/fragment delimiter edge case.
-- Four non-blocking warnings: one WeasyPrint HarfBuzz dependency deprecation and three existing/test-client `streamablehttp_client` compatibility deprecations.
-- No Docker build, live upstream smoke, deployment, or registry push occurred. Revocation/rotation status for the previously shared temporary token is unverified; confirm it before any future live smoke or deployment.
-
-## 8. References
-
-
-- Official DocuSeal API/MCP reference: https://www.docuseal.com/docs/api?lang=python
-- Python MCP SDK v1.23.1 protocol support: https://github.com/modelcontextprotocol/python-sdk/releases/tag/v1.23.1
-- Python MCP SDK v1.24.0 authenticated Streamable HTTP client API: https://github.com/modelcontextprotocol/python-sdk/releases/tag/v1.24.0
-- Official DocuSeal self-hosted MCP guide and `search_templates` input/output contract: https://www.docuseal.com/guides/integrate-with-ai-agents-using-mcp
-- Python MCP SDK v1.30.0 release notes: https://github.com/modelcontextprotocol/python-sdk/releases/tag/v1.30.0
+- Official DocuSeal self-hosted MCP guide (tools: `search_templates`, `load_template`, `create_template`, `send_documents`, `search_documents`; auth `Authorization: Bearer`; endpoint `<origin>/mcp`): https://www.docuseal.com/guides/integrate-with-ai-agents-using-mcp
+- DocuSeal REST API reference (legacy basis for removed behavior): https://www.docuseal.com/docs/api?lang=python
+- Python MCP SDK v1.30.0 (selected pin): https://github.com/modelcontextprotocol/python-sdk/releases/tag/v1.30.0
