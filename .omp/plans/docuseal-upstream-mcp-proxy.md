@@ -116,10 +116,10 @@ Two REST-backed capabilities lack a documented native MCP equivalent:
 - Tasks: **APPROVED by user on 2026-10-01** — RED-first tests, native MCP migration and REST/config removal, Dockerfile adapter packaging, docs, focused/full verification and reviews; no live DocuSeal calls or deployment.
 - Critic reviews: prior **PASS (2026-10-01)** covered the earlier task list. The Dockerfile packaging amendment also received **Critic PASS (2026-10-01; no findings)**. Previous result-contract, URL/token, and nested-field findings remain resolved.
 - Implementation gate: **OPEN on 2026-10-01.** Requirements, design, amended task approval, and Critic PASS are recorded.
-- Implementation: **COMPLETE, uncommitted (2026-10-01).** Native MCP-only routes, two-value configuration, unsupported-operation removal, docs, and Docker packaging are implemented. The post-dispatch cancellation regression failed before the fix and passed on the same test after it.
+- Implementation: **COMPLETE and pushed (2026-10-01), `52a91e08fdfaa76156417eead6202e92f94c5625`.** Native MCP-only routes, two-value configuration, unsupported-operation removal, docs, and Docker packaging are implemented. The post-dispatch cancellation regression failed before the fix and passed on the same test after it.
 - Verification: focused suite **86 passed**; full suite **185 passed, 2 skipped, 90.11% coverage** (90% required); in-process Streamable HTTP smoke covers all retained upstream MCP operations. No live DocuSeal request, Docker build, deployment, or registry push.
 - Reviews: final code, Python, and security reviews **PASS**. Review findings on ambiguous send results and post-dispatch cancellation were fixed and re-reviewed.
-- Commit/push gate: **APPROVED by user on 2026-10-01** after review of the final diff; conventional commit and push are authorized.
+- Commit/push gate: **APPROVED by user on 2026-10-01** after review of the final diff; implementation commit `52a91e08fdfaa76156417eead6202e92f94c5625` was pushed to `origin/main`.
 
 ### Revision 1 records — SUPERSEDED 2026-10-01
 
