@@ -113,9 +113,9 @@ Two REST-backed capabilities lack a documented native MCP equivalent:
 
 - Requirements/scope: **APPROVED by user on 2026-10-01** — exactly two DocuSeal env values (`DOCUSEAL_URL`, `DOCUSEAL_MCP_BEARER_TOKEN`); MCP-only operations; Option A removals; no `create_template`.
 - Design: **APPROVED by user on 2026-10-01** — server-side Bearer MCP adapter, root-origin `/mcp` derivation, native result envelopes, exact submitter-field mapping, and safe handling of missing credentials and ambiguous sends.
-- Tasks: **PENDING user re-approval** — the approved task list is amended to include required Dockerfile packaging for `docuseal_mcp.py`.
+- Tasks: **APPROVED by user on 2026-10-01** — RED-first tests, native MCP migration and REST/config removal, Dockerfile adapter packaging, docs, focused/full verification and reviews; no live DocuSeal calls or deployment.
 - Critic reviews: prior **PASS (2026-10-01)** covered the earlier task list. The Dockerfile packaging amendment also received **Critic PASS (2026-10-01; no findings)**. Previous result-contract, URL/token, and nested-field findings remain resolved.
-- Implementation gate: **CLOSED on 2026-10-01 pending user re-approval of the amended task list.** Requirements and design approvals remain in effect.
+- Implementation gate: **OPEN on 2026-10-01.** Requirements, design, amended task approval, and Critic PASS are recorded.
 
 ### Revision 1 records — SUPERSEDED 2026-10-01
 
