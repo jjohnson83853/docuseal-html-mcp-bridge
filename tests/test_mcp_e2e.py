@@ -2,6 +2,7 @@ import asyncio
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import httpx
@@ -36,8 +37,6 @@ def test_streamable_http_tools_call_docuseal_rest(monkeypatch):
 
     def respond(request):
         requests.append(request)
-        if request.url.path == "/api/templates":
-            return httpx.Response(200, json={"data": [template], "pagination": {}})
         if request.url.path == "/api/templates/42":
             return httpx.Response(200, json=template)
         if request.url.path == "/api/submissions" and request.method == "POST":
@@ -53,23 +52,26 @@ def test_streamable_http_tools_call_docuseal_rest(monkeypatch):
         api_key="test-api-key",
         transport=httpx.MockTransport(respond),
     )
+
+    class SearchClient:
+        async def search_templates(self, query="", limit=10):
+            return {"data": [{"id": 42, "name": "Mutual NDA"}]}
+
     monkeypatch.setattr(server, "_api_client", api)
+    monkeypatch.setattr(server, "_mcp_client", SearchClient())
     app = server.mcp.streamable_http_app()
 
-    @asynccontextmanager
-    async def client_factory(*, headers, timeout, auth):
-        async with httpx.AsyncClient(
+    def client_factory(*, headers, timeout, auth):
+        return httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             headers=headers,
             timeout=timeout,
             auth=auth,
-        ) as client:
-            yield client
-
+        )
     async def exercise():
         async with app.router.lifespan_context(app):
             async with streamablehttp_client(
-                "http://bridge.test/mcp",
+                "http://127.0.0.1:8000/mcp",
                 httpx_client_factory=client_factory,
             ) as (read_stream, write_stream, _):
                 async with ClientSession(read_stream, write_stream) as session:
@@ -98,8 +100,7 @@ def test_streamable_http_tools_call_docuseal_rest(monkeypatch):
                         return value
 
                     found = await call("search_templates", {"query": "NDA"})
-                    assert found["data"][0]["id"] == 42
-                    assert found["data"][0]["fields"] == template["fields"]
+                    assert found == {"data": [{"id": 42, "name": "Mutual NDA"}]}
 
                     loaded = await call("get_template", {"template_id": 42})
                     assert loaded["id"] == 42
@@ -130,16 +131,16 @@ def test_streamable_http_tools_call_docuseal_rest(monkeypatch):
 
     asyncio.run(exercise())
     assert [request.url.path for request in requests] == [
-        "/api/templates",
         "/api/templates/42",
         "/api/submissions",
         "/api/submissions",
         "/api/submissions/73",
     ]
     assert all(request.headers["X-Auth-Token"] == "test-api-key" for request in requests)
-    assert dict(requests[0].url.params) == {"q": "NDA", "limit": "10"}
-    assert dict(requests[2].url.params) == {"template_id": "42", "status": "pending", "limit": "10"}
-    assert json.loads(requests[3].content) == {
+    assert dict(requests[1].url.params) == {
+        "template_id": "42", "status": "pending", "limit": "10"
+    }
+    assert json.loads(requests[2].content) == {
         "template_id": 42,
         "submitters": [
             {
@@ -258,20 +259,18 @@ def test_mcp_render_tool_works_without_rest_key_or_upstream_requests(monkeypatch
     test_mcp.add_tool(server.render_template_documents)
     app = test_mcp.streamable_http_app()
 
-    @asynccontextmanager
-    async def client_factory(*, headers, timeout, auth):
-        async with httpx.AsyncClient(
+    def client_factory(*, headers, timeout, auth):
+        return httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             headers=headers,
             timeout=timeout,
             auth=auth,
-        ) as client:
-            yield client
+        )
 
     async def exercise():
         async with app.router.lifespan_context(app):
             async with streamablehttp_client(
-                "http://bridge.test/mcp",
+                "http://127.0.0.1:8000/mcp",
                 httpx_client_factory=client_factory,
             ) as (read_stream, write_stream, _):
                 async with ClientSession(read_stream, write_stream) as session:
@@ -297,3 +296,83 @@ def test_mcp_render_tool_works_without_rest_key_or_upstream_requests(monkeypatch
     asyncio.run(exercise())
 
     assert requests == []
+
+
+def test_mcp_search_uses_mocked_native_mcp_without_rest_fallback(monkeypatch):
+    import docuseal_mcp
+
+    observed = {}
+
+    class UpstreamSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def initialize(self):
+            return None
+
+        async def call_tool(self, name, arguments):
+            observed["call"] = (name, arguments)
+            return SimpleNamespace(
+                isError=False,
+                content=[SimpleNamespace(type="text", text='[{"id": 91, "name": "Mock NDA"}]')],
+            )
+
+    @asynccontextmanager
+    async def upstream_transport(url, *, http_client):
+        observed["url"] = url
+        observed["headers"] = http_client.headers.get("authorization")
+        yield object(), object(), "session"
+
+    monkeypatch.setattr(docuseal_mcp, "streamable_http_client", upstream_transport)
+    monkeypatch.setattr(docuseal_mcp, "ClientSession", lambda *args: UpstreamSession())
+    monkeypatch.setattr(server, "_mcp_client", docuseal_mcp.DocuSealMcpClient(
+        "https://native.example/mcp", "mock-only-bearer"
+    ))
+    monkeypatch.setenv("DOCUSEAL_API_KEY", "rest-key-must-not-be-used")
+
+    def reject_rest(request):
+        raise AssertionError("template search fell back to REST")
+
+    monkeypatch.setattr(server, "_api_client", DocuSealClient(
+        base_url="https://rest.example",
+        api_key="rest-key-must-not-be-used",
+        transport=httpx.MockTransport(reject_rest),
+    ))
+    from mcp.server.fastmcp import FastMCP
+
+    test_mcp = FastMCP("Native MCP search test", streamable_http_path="/mcp")
+    test_mcp.add_tool(server.search_templates)
+    app = test_mcp.streamable_http_app()
+
+    def client_factory(*, headers, timeout, auth):
+        return httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            headers=headers,
+            timeout=timeout,
+            auth=auth,
+        )
+    async def exercise():
+        async with app.router.lifespan_context(app):
+            async with streamablehttp_client(
+                "http://127.0.0.1:8000/mcp",
+                httpx_client_factory=client_factory,
+            ) as (read_stream, write_stream, _):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    result = await session.call_tool(
+                        "search_templates", {"query": "NDA", "limit": 12}
+                    )
+                    assert not result.isError
+                    value = result.structuredContent
+                    if value is None:
+                        value = json.loads(result.content[0].text)
+                    assert value == {"data": [{"id": 91, "name": "Mock NDA"}]}
+    asyncio.run(exercise())
+    assert observed == {
+        "url": "https://native.example/mcp",
+        "headers": "Bearer mock-only-bearer",
+        "call": ("search_templates", {"q": "NDA", "limit": 12}),
+    }

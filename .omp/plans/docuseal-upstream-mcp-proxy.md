@@ -1,6 +1,6 @@
 # SpecDD: Proxy DocuSeal Native MCP Through the Bridge
 
-**Status:** Draft — requirements, design, and tasks require separate user approval; no implementation is authorized yet.
+**Status:** Approved implementation complete; full suite and mocked bridge MCP smoke pass; code, Python, and security reviews pass. No live upstream request, deployment, image build, or registry push was performed.
 **Created:** 2026-09-30
 **Refined:** 2026-09-30 (design/tasks grounded in repo facts; sequencing made explicit)
 **Related plan:** `.omp/plans/docuseal-html-export-links.md`
@@ -109,10 +109,10 @@ Make LibreChat use the private DocuSeal bridge as its only DocuSeal MCP endpoint
 8. **Verification and reviews.** Run focused tests, then the full suite with ≥90% coverage, and a mocked bridge MCP smoke. Complete code, Python, and security reviews (secret handling is a mandatory security check). A live upstream test is optional and requires a fresh operator-issued token; never reuse the earlier temporary token. Before any live upstream smoke or deployment, confirm that the earlier shared temporary token has been revoked/rotated; record status only, never the token. *Acceptance:* suite green at ≥90% coverage; reviews recorded; no live request without separate authorization.
 9. **Commit and push** the verified implementation. No image build/push or deployment without separate authorization. *Acceptance:* committed per conventional-commit format; ledger updated.
 
-## 5. Open Decisions for User Checkpoints
+## 5. Confirmed Decisions
 
-- **Scope (checkpoint 1):** route only `search_templates` through native MCP, or migrate every compatible existing DocuSeal operation? The native tool list observed was `search_templates`, `load_template`, `create_template`, `send_documents`, and `search_documents`; current bridge tools do not map one-to-one to all of them. **Recommended:** search-only now; preserve remaining bridge tools; expose no new write operations.
-- **Default endpoint (checkpoint 2):** `DOCUSEAL_MCP_URL` defaults to the observed working `https://signature.bullprog.com/mcp` with an override variable. **Recommended:** confirm this default for deployment.
+- **Scope:** route only `search_templates` through native MCP; preserve all other REST-backed tools and offline rendering; add no upstream write tools.
+- **Default endpoint:** `DOCUSEAL_MCP_URL` defaults to `https://signature.bullprog.com/mcp` and supports an override.
 
 ## 6. Approval Ledger
 
@@ -126,9 +126,20 @@ Make LibreChat use the private DocuSeal bridge as its only DocuSeal MCP endpoint
 - Saved task-list review: PASS — reviewed with SpecDD; no remaining findings (2026-09-30).
 
 ### Implementation gate
-- OPEN on 2026-09-30. Critic reviews and all three user checkpoints are recorded. No `.superpowers/sdd/*/progress.md` workspace exists, so no `GATE_OPEN` marker applies.
+- OPENED on 2026-09-30 after critic reviews and all three user checkpoints were recorded. No `.superpowers/sdd/*/progress.md` workspace exists, so no `GATE_OPEN` marker applies.
 
-## 7. References
+## 7. Implementation and Verification Results
+
+- Implemented the approved native MCP search adapter, configuration, SDK pin, documentation, result validation, HTTPS/loopback URL validation, and regression tests. Other REST-backed tools and offline rendering remain unchanged.
+- RED evidence: the new adapter tests initially failed collection because `docuseal_mcp` did not yet exist; the empty-query/fragment URL regression tests failed before the validator fix and passed afterward.
+- Focused adapter tests: **34 passed**. Full suite: **206 passed, 2 skipped**, **91.33% total source coverage** (90% required); `docuseal_mcp.py` coverage **100%**.
+- Mocked bridge MCP search smoke: **1 passed**. It exercised the bridge MCP endpoint, upstream query/limit mapping and Bearer header using a mocked upstream; no live DocuSeal request was made.
+- Final code, Python, and security reviews: **PASS**, no remaining findings. The initial security and typing findings were fixed; review also closed the empty query/fragment delimiter edge case.
+- Four non-blocking warnings: one WeasyPrint HarfBuzz dependency deprecation and three existing/test-client `streamablehttp_client` compatibility deprecations.
+- No Docker build, live upstream smoke, deployment, or registry push occurred. Revocation/rotation status for the previously shared temporary token is unverified; confirm it before any future live smoke or deployment.
+
+## 8. References
+
 
 - Official DocuSeal API/MCP reference: https://www.docuseal.com/docs/api?lang=python
 - Python MCP SDK v1.23.1 protocol support: https://github.com/modelcontextprotocol/python-sdk/releases/tag/v1.23.1

@@ -18,6 +18,7 @@ import uvicorn
 
 from artifact_server import create_artifact_app
 from docuseal_api import DocuSealClient
+from docuseal_mcp import DocuSealMcpClient
 from document_export import ArtifactStore, RenderLimits, render_template_documents as render_documents
 
 
@@ -43,10 +44,12 @@ for _handler in logging.getLogger().handlers:
 logger = logging.getLogger(__name__)
 DOCUSEAL_URL = os.getenv("DOCUSEAL_URL", "https://signature.bullprog.com").rstrip("/")
 DOCUSEAL_API_KEY = os.getenv("DOCUSEAL_API_KEY", "")
+DOCUSEAL_MCP_URL = os.getenv("DOCUSEAL_MCP_URL", "https://signature.bullprog.com/mcp")
+DOCUSEAL_MCP_BEARER_TOKEN = os.getenv("DOCUSEAL_MCP_BEARER_TOKEN", "")
 MCP_HOST = os.getenv("MCP_HOST", "127.0.0.1")
 MCP_PORT = 8000
 DEFAULT_ARTIFACT_ROOT = Path(tempfile.gettempdir()) / "docuseal-artifacts"
-SERVER_INSTRUCTIONS = """Render model-generated contract HTML to offline PDF and DOCX drafts for manual upload to DocuSeal. The exported files are not DocuSeal templates; users must manually place and verify fields in DocuSeal. Supported field elements are text-field, date-field, signature-field, initials-field, checkbox-field, radio-field, and select-field. Remaining tools query DocuSeal REST and need DOCUSEAL_API_KEY. Sending a submission may email signers and requires explicit user authorization."""
+SERVER_INSTRUCTIONS = """Render model-generated contract HTML to offline PDF and DOCX drafts for manual upload to DocuSeal. The exported files are not DocuSeal templates; users must manually place and verify fields in DocuSeal. Supported field elements are text-field, date-field, signature-field, initials-field, checkbox-field, radio-field, and select-field. Remaining tools query DocuSeal; template search uses native MCP credentials and other REST tools require DOCUSEAL_API_KEY. Sending a submission may email signers and requires explicit user authorization."""
 
 
 @dataclass(frozen=True)
@@ -131,6 +134,7 @@ def load_config(environ: Mapping[str, str] | None = None) -> ServerConfig:
 mcp = FastMCP("DocuSeal REST bridge", instructions=SERVER_INSTRUCTIONS, host=MCP_HOST,
               port=MCP_PORT, streamable_http_path="/mcp")
 _api_client = DocuSealClient(DOCUSEAL_URL, DOCUSEAL_API_KEY)
+_mcp_client = DocuSealMcpClient(DOCUSEAL_MCP_URL, DOCUSEAL_MCP_BEARER_TOKEN)
 _artifact_store: ArtifactStore | None = None
 _render_limits = RenderLimits()
 
@@ -150,8 +154,8 @@ async def render_template_documents(template_name: str, html_content: str,
 
 @mcp.tool()
 async def search_templates(query: str = "", limit: int = 10) -> dict:
-    """Search templates by name and return DocuSeal template records including fields."""
-    return await _api_client.search_templates(query, limit)
+    """Search templates by name using DocuSeal's native read-only MCP tool."""
+    return await _mcp_client.search_templates(query, limit)
 
 
 @mcp.tool()

@@ -1,4 +1,4 @@
-mcp==1.16.0
+mcp==1.30.0
 httpx
 html-for-docx==1.2.0
 weasyprint==70.0

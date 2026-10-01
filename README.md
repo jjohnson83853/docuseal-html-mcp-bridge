@@ -1,10 +1,10 @@
 # DocuSeal HTML MCP bridge
 
-This bridge provides LibreChat with private Streamable HTTP MCP access to five DocuSeal REST operations and an offline HTML-to-PDF/DOCX export tool. Export does not call DocuSeal and works without `DOCUSEAL_API_KEY`. Exported documents are upload-ready drafts, not created DocuSeal templates; upload the PDF or DOCX manually and place/verify the fields in DocuSeal's editor. DOCX supports a smaller HTML/CSS subset than PDF, so layout may differ.
+This bridge provides LibreChat with private Streamable HTTP MCP access to DocuSeal template search, four REST operations, and an offline HTML-to-PDF/DOCX export tool. Export does not call DocuSeal and works without DocuSeal credentials. Exported documents are upload-ready drafts, not created DocuSeal templates; upload the PDF or DOCX manually and place/verify the fields in DocuSeal's editor. DOCX supports a smaller HTML/CSS subset than PDF, so layout may differ.
 
 ## Configuration and run
 
-Python 3.11 or newer is required. Local renders require the `libreoffice` executable with Writer's PDF export filter for DOCX page-limit validation; the Docker image installs `libreoffice-writer-nogui`. DOCX exports fail closed when this validation is unavailable. `DOCUSEAL_URL` defaults to `https://signature.bullprog.com`; a configured origin or URL ending in `/api` is accepted. `DOCUSEAL_API_KEY` is optional at startup, is sent only in `X-Auth-Token`, and is required for REST-backed tools. `ARTIFACT_PUBLIC_BASE_URL` must be set to the exact browser-reachable HTTPS origin (no path, query, fragment, or credentials) before export can return links. `ARTIFACT_PORT` defaults to `8001`, must be between 1024 and 65535, and cannot be `8000`. `ARTIFACT_DIR` defaults to a private ephemeral directory; artifacts are not durable across container restart.
+Python 3.11 or newer is required. Local renders require the `libreoffice` executable with Writer's PDF export filter for DOCX page-limit validation; the Docker image installs `libreoffice-writer-nogui`. DOCX exports fail closed when this validation is unavailable. Template search uses `DOCUSEAL_MCP_URL` (default `https://signature.bullprog.com/mcp`) and the server-only `DOCUSEAL_MCP_BEARER_TOKEN`; it calls native MCP with `Authorization: Bearer` and fails safely for search only if the token is missing or upstream is unavailable. It never falls back to REST. Other REST tools use `DOCUSEAL_URL` (default `https://signature.bullprog.com`) and optional `DOCUSEAL_API_KEY`, sent only in `X-Auth-Token`. These credentials are separate and are never interchangeable. `ARTIFACT_PUBLIC_BASE_URL` must be set to the exact browser-reachable HTTPS origin (no path, query, fragment, or credentials) before export can return links. `ARTIFACT_PORT` defaults to `8001`, must be between 1024 and 65535, and cannot be `8000`. `ARTIFACT_DIR` defaults…
 Render/resource settings are configurable with `MAX_INPUT_BYTES`, `MAX_OUTPUT_BYTES`, `MAX_PAGES`, `MAX_IMAGE_BYTES`, `MAX_IMAGE_PIXELS`, and `WORKER_TIMEOUT_SECONDS`; aggregate storage uses `MAX_ARTIFACT_BYTES`, `MAX_ARTIFACT_FILES`, and `ARTIFACT_RETENTION_SECONDS` (maximum 86400). `MAX_CONCURRENT_RENDERS` must remain `1`; the worker has fixed 45-second CPU and 1-GiB address-space ceilings.
 
 ```sh
@@ -17,7 +17,7 @@ ARTIFACT_PUBLIC_BASE_URL=https://downloads.example.com python server.py
 
 The MCP listener exposes only Streamable HTTP `/mcp` at port 8000. The artifact listener is a separate ASGI application on `ARTIFACT_PORT`, exposing only `GET /download`. Both bind addresses are configurable (`MCP_HOST`, `ARTIFACT_HOST`). The artifact port is configurable in Compose with the same value supplied to its environment and `expose` list.
 
-Compose attaches the bridge only to the existing LibreChat and Caddy Docker networks and publishes no host port. These networks are trusted: a peer on the Caddy network can technically reach both listeners. Internet-facing Caddy must route only to the artifact listener; never proxy port 8000. Startup validates `ARTIFACT_PORT` before either listener starts. The REST API key may be omitted for export-only operation.
+Compose attaches the bridge only to the existing LibreChat and Caddy Docker networks and publishes no host port. These networks are trusted: a peer on the Caddy network can technically reach both listeners. Internet-facing Caddy must route only to the artifact listener; never proxy port 8000. Startup validates `ARTIFACT_PORT` before either listener starts. Both DocuSeal credentials may be omitted at startup; local rendering remains available, while only the feature using a missing credential fails.
 
 ```sh
 cp .env.example .env
@@ -25,7 +25,7 @@ cp .env.example .env
 docker compose up --build -d
 ```
 
-Compose reads `.env` automatically. `.env` is ignored by Git; keep credentials there and never commit it. `DOCUSEAL_API_KEY` is optional for offline export.
+Compose reads `.env` automatically. `.env` is ignored by Git; keep credentials there and never commit it. Set `DOCUSEAL_MCP_BEARER_TOKEN` for template search and `DOCUSEAL_API_KEY` separately for REST-backed tools; neither is required for offline export.
 
 LibreChat connects over its private network:
 
@@ -85,7 +85,7 @@ The `ARTIFACT_PORT` value in the Caddy process must be the same value used by Co
 ## Available tools
 
 - `render_template_documents(template_name, html_content, document_size="Letter")`: locally renders a PDF and DOCX and returns one format-bound, expiring download link per file plus `expires_at`. It never calls DocuSeal. Named `text-field`, `date-field`, `signature-field`, `initials-field`, `checkbox-field`, `radio-field`, and `select-field` elements become visible `[name — Type field]` labels. The seven field kinds require a non-empty `name`; styles that could hide or erase these labels are removed, while approved spacing, layout, and emphasis styles are preserved. Unsupported external resources are disabled/omitted. Users manually upload a returned file, then place and verify interactive fields in DocuSeal.
-- `search_templates`: searches `GET /api/templates`.
+- `search_templates(query="", limit=10)`: searches DocuSeal's native read-only MCP `search_templates` tool through the bridge using one per-call connection, a 20-second deadline, and no retries. `query` maps to upstream `q`; `limit` must be 1–100. The result contains only `data` records with `id` and `name`; no pagination metadata is provided.
 - `get_template`: retrieves `GET /api/templates/{id}`.
 - `list_submissions`: filters `GET /api/submissions`.
 - `send_submission`: posts to `POST /api/submissions`; this can email signers and is allowed only on explicit user request. A 20-second total request deadline applies; if the result is unknown, inspect DocuSeal before retrying.
