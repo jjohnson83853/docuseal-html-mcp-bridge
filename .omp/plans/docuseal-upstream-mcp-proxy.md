@@ -116,8 +116,8 @@ Make LibreChat use the private DocuSeal bridge as its only DocuSeal MCP endpoint
 
 ## 6. Approval Ledger
 
-### User checkpoints — pending
-- Requirements: PENDING
+### User checkpoints
+- Requirements: APPROVED by user on 2026-09-30 — route only `search_templates` through native MCP; keep other REST tools and offline rendering unchanged; expose no upstream write tools; forward query/limit; return only template `id`/`name` records in `data` without fabricated pagination.
 - Design: PENDING
 - Tasks: PENDING
 
