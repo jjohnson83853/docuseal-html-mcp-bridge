@@ -1,6 +1,6 @@
 # SpecDD: Proxy DocuSeal Native MCP Through the Bridge
 
-**Status:** Revision 2 scope/design/task draft; user approvals pending. No Revision 2 implementation, tests, or live DocuSeal contact has occurred.
+**Status:** Revision 2 requirements/design approved; task-list amendment pending critic review and user re-approval. Test-only changes have begun but no tests have run; no application implementation or live DocuSeal contact has occurred.
 **Created:** 2026-09-30
 **Revised:** 2026-10-01 (scope change: exactly two DocuSeal env values; all retained DocuSeal operations routed through native MCP)
 **Related plan:** `.omp/plans/docuseal-html-export-links.md`
@@ -90,7 +90,7 @@ Two REST-backed capabilities lack a documented native MCP equivalent:
 2. **Design approval (user checkpoint 2).** Confirm retained tool names/result envelopes, exact `send_submission` to `send_documents` mapping, origin derivation, authentication behavior, redaction, and outcome-unknown handling. *Acceptance:* approval recorded.
 3. **Task-list approval (user checkpoint 3).** Critic reviews the saved task list; present the exact implementation sequence and obtain approval. *Acceptance:* critic PASS and approval recorded; implementation gate opens only after all three user approvals and required critic verdicts are recorded.
 4. **Tests first (RED).** Extend `tests/test_docuseal_mcp.py` and routing tests for URL derivation/validation, four retained tool mappings and result contracts, exact `send_documents` argument tree (including populated `submitters[0].fields` and omission when `field_values is None`), removed-tool discovery, startup/render with Bearer unset, no REST or `X-Auth-Token`, secret redaction, and ambiguous post-dispatch send failure with no retry. Delete REST-only `tests/test_docuseal_api.py`; preserve relevant behavior only where the native MCP contract supports it. *Acceptance:* expected assertions fail before implementation.
-5. **Implement (GREEN).** Extend `docuseal_mcp.py`; route retained tools in `server.py`; delete `docuseal_api.py`, `tests/test_docuseal_api.py`, and active references to `DOCUSEAL_API_KEY`/`DOCUSEAL_MCP_URL` (`.env.example`, `docker-compose.yml`, README, startup log/instructions). *Acceptance:* tests GREEN; no REST client remains; renderer unchanged.
+5. **Implement (GREEN).** Extend `docuseal_mcp.py`; route retained tools in `server.py`; update `Dockerfile` to copy `docuseal_mcp.py` and remove `docuseal_api.py`; delete `docuseal_api.py`, `tests/test_docuseal_api.py`, and active references to `DOCUSEAL_API_KEY`/`DOCUSEAL_MCP_URL` (`.env.example`, `docker-compose.yml`, README, startup log/instructions). *Acceptance:* tests GREEN; no REST client remains; container includes its native MCP adapter; renderer unchanged.
 6. **Docs and configuration.** Update `.env.example`, Compose and README for exactly two active DocuSeal values and the changed tool/result contracts. *Acceptance:* configs/docs expose only the two approved values.
 7. **Verification and reviews.** Run focused tests, full suite with ≥90% coverage, and mocked bridge MCP smoke for all retained tools. Complete code, Python and security reviews. No live upstream request, Docker build, deployment, or registry push. *Acceptance:* suite green at ≥90%; reviews PASS; no live contact.
 8. **Commit/push gate.** Present final diff and proposed commit message; commit/push only after user approval. *Acceptance:* conventional commit and ledger updated.
@@ -113,9 +113,9 @@ Two REST-backed capabilities lack a documented native MCP equivalent:
 
 - Requirements/scope: **APPROVED by user on 2026-10-01** — exactly two DocuSeal env values (`DOCUSEAL_URL`, `DOCUSEAL_MCP_BEARER_TOKEN`); MCP-only operations; Option A removals; no `create_template`.
 - Design: **APPROVED by user on 2026-10-01** — server-side Bearer MCP adapter, root-origin `/mcp` derivation, native result envelopes, exact submitter-field mapping, and safe handling of missing credentials and ambiguous sends.
-- Tasks: **APPROVED by user on 2026-10-01** — RED-first tests, native MCP migration and REST/config removal, docs, focused/full verification and reviews; no live DocuSeal calls or deployment.
-- Critic reviews: **PASS (2026-10-01)** on the SpecDD and saved task list, including the final checkpoint-aligned revision; no findings. Earlier REVISE findings were resolved by specifying result envelopes, URL/missing-token behavior, exact nested submitter `fields` mapping, and its regression assertion.
-- Implementation gate: **OPEN on 2026-10-01.** Requirements, design, task approvals, and Critic PASS are recorded.
+- Tasks: **PENDING user re-approval** — the approved task list is amended to include required Dockerfile packaging for `docuseal_mcp.py`.
+- Critic reviews: prior **PASS (2026-10-01)** covered the earlier task list. Critic review of this packaging amendment is pending; previous result-contract, URL/token, and nested-field findings remain resolved.
+- Implementation gate: **CLOSED on 2026-10-01 pending amended task-list Critic PASS and user re-approval.** Requirements and design approvals remain in effect.
 
 ### Revision 1 records — SUPERSEDED 2026-10-01
 
