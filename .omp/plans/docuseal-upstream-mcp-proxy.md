@@ -111,7 +111,7 @@ Two REST-backed capabilities lack a documented native MCP equivalent:
 
 ### Revision 2 (this document)
 
-- Requirements/scope: **PENDING user approval** — exactly two DocuSeal env values (`DOCUSEAL_URL`, `DOCUSEAL_MCP_BEARER_TOKEN`); MCP-only operations; Option A removals; no `create_template`.
+- Requirements/scope: **APPROVED by user on 2026-10-01** — exactly two DocuSeal env values (`DOCUSEAL_URL`, `DOCUSEAL_MCP_BEARER_TOKEN`); MCP-only operations; Option A removals; no `create_template`.
 - Design: **PENDING user approval.**
 - Tasks: **PENDING user approval.**
 - Critic reviews: **PASS (2026-10-01)** on the SpecDD and saved task list, including the final checkpoint-aligned revision; no findings. Earlier REVISE findings were resolved by specifying result envelopes, URL/missing-token behavior, exact nested submitter `fields` mapping, and its regression assertion.
