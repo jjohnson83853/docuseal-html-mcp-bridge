@@ -112,7 +112,7 @@ Two REST-backed capabilities lack a documented native MCP equivalent:
 ### Revision 2 (this document)
 
 - Requirements/scope: **APPROVED by user on 2026-10-01** — exactly two DocuSeal env values (`DOCUSEAL_URL`, `DOCUSEAL_MCP_BEARER_TOKEN`); MCP-only operations; Option A removals; no `create_template`.
-- Design: **PENDING user approval.**
+- Design: **APPROVED by user on 2026-10-01** — server-side Bearer MCP adapter, root-origin `/mcp` derivation, native result envelopes, exact submitter-field mapping, and safe handling of missing credentials and ambiguous sends.
 - Tasks: **PENDING user approval.**
 - Critic reviews: **PASS (2026-10-01)** on the SpecDD and saved task list, including the final checkpoint-aligned revision; no findings. Earlier REVISE findings were resolved by specifying result envelopes, URL/missing-token behavior, exact nested submitter `fields` mapping, and its regression assertion.
 - Implementation gate: **CLOSED/RESET on 2026-10-01.** Reopens only after requirements, design, and task approvals and required critic verdicts are recorded.
