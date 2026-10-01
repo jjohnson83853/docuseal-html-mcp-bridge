@@ -118,7 +118,7 @@ Make LibreChat use the private DocuSeal bridge as its only DocuSeal MCP endpoint
 
 ### User checkpoints
 - Requirements: APPROVED by user on 2026-09-30 — route only `search_templates` through native MCP; keep other REST tools and offline rendering unchanged; expose no upstream write tools; forward query/limit; return only template `id`/`name` records in `data` without fabricated pagination.
-- Design: PENDING
+- Design: APPROVED by user on 2026-09-30 — authenticated per-call MCP v1 adapter, SDK `1.30.0`, server-side URL/Bearer configuration, no retries/pool or REST fallback, safe CallToolResult decoding/errors, startup/render isolation, prior-token rotation before any live smoke/deployment.
 - Tasks: PENDING
 
 ### Critic reviews — complete
