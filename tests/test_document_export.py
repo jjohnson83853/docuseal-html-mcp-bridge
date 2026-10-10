@@ -14,6 +14,7 @@ from xml.etree import ElementTree
 import httpx
 import pytest
 
+import document_export
 from artifact_server import create_artifact_app
 from document_export import (
     ArtifactCapacityError,
@@ -190,6 +191,7 @@ def test_hidden_field_styles_cannot_hide_required_placeholders(monkeypatch):
         'margin-left:-9999px; margin-left:999999px; '
         'margin-top:5; margin-top:999999px; margin-top:40px"></text-field>',
         RenderLimits(),
+        server_defined=True,
     )
     assert "display:none" not in normalized
     assert "visibility:hidden" not in normalized
@@ -460,9 +462,73 @@ def test_self_closing_unsupported_container_preserves_following_content(tmp_path
         )
     )
 
-    assert "[Unsupported content omitted for safety]" in rendered[0]
+    assert "[Unsupported content omitted for safety]" not in rendered[0]
     assert "Agreement" in rendered[0]
     assert "Signer — Text field" in rendered[0]
+
+
+def test_default_mode_preserves_model_css_and_omits_silently():
+    normalized = document_export.normalize_html(
+        "<style>p { font-family: Georgia; font-size: 14pt; }</style>"
+        '<p style="font-family: Georgia; color: #333">Body</p>'
+        "<script>evil()</script><svg>hidden</svg>",
+        RenderLimits(),
+    )
+    assert "<style>p { font-family: Georgia; font-size: 14pt; }</style>" in normalized
+    assert 'style="font-family: Georgia; color: #333"' in normalized
+    assert "evil" not in normalized
+    assert "<svg" not in normalized
+    assert "hidden" not in normalized
+    assert "Unsupported" not in normalized
+    assert "omitted" not in normalized
+
+
+def test_default_mode_drops_resource_loading_css():
+    normalized = document_export.normalize_html(
+        "<style>@import url(http://example.invalid/x.css); "
+        "p { background: url(file:///etc/passwd); }</style><p>Body</p>",
+        RenderLimits(),
+    )
+    assert "@import" not in normalized
+    assert "url(" not in normalized
+    assert "Body" in normalized
+
+
+def test_server_defined_mode_strips_style_blocks_and_exotic_styles():
+    normalized = document_export.normalize_html(
+        '<style>p { color: red; }</style>'
+        '<p style="color: blue; font-family: Arial">Body</p>',
+        RenderLimits(),
+        server_defined=True,
+    )
+    assert "<style" not in normalized
+    assert "color: red" not in normalized
+    assert "font-family" not in normalized
+    assert "Body" in normalized
+
+
+def test_render_server_defined_mode_strips_style(tmp_path):
+    store = ArtifactStore(tmp_path)
+    rendered = []
+
+    def renderer(source, **kwargs):
+        rendered.append(source)
+        return b"rendered"
+
+    run(
+        render_template_documents(
+            "Strict mode",
+            "<style>p { font-family: Georgia; }</style><p>Agreement</p>",
+            store=store,
+            public_base_url=PUBLIC_BASE_URL,
+            pdf_renderer=renderer,
+            docx_renderer=renderer,
+            server_defined=True,
+        )
+    )
+
+    assert all("<style" not in source for source in rendered)
+    assert all("font-family" not in source for source in rendered)
 
 
 def test_artifact_store_publishes_pair_atomically_and_cleans_expired_files(tmp_path):

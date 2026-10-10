@@ -203,3 +203,31 @@ def test_missing_mcp_token_fails_safely(monkeypatch):
 
     with pytest.raises(DocuSealMcpError, match="DOCUSEAL_MCP_BEARER_TOKEN"):
         asyncio.run(server.search_templates())
+
+
+def test_load_config_defaults_to_model_defined_rendering(tmp_path):
+    config = server.load_config({"ARTIFACT_DIR": str(tmp_path)})
+    assert config.server_defined_rendering is False
+
+
+@pytest.mark.parametrize("value", ["1", "true", "YES", "on"])
+def test_load_config_enables_server_defined_rendering(tmp_path, value):
+    config = server.load_config(
+        {"ARTIFACT_DIR": str(tmp_path), "DOCUSEAL_SERVER_DEFINED_RENDERING": value}
+    )
+    assert config.server_defined_rendering is True
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no", "off", ""])
+def test_load_config_disables_server_defined_rendering(tmp_path, value):
+    config = server.load_config(
+        {"ARTIFACT_DIR": str(tmp_path), "DOCUSEAL_SERVER_DEFINED_RENDERING": value}
+    )
+    assert config.server_defined_rendering is False
+
+
+def test_load_config_rejects_invalid_rendering_flag(tmp_path):
+    with pytest.raises(ValueError, match="DOCUSEAL_SERVER_DEFINED_RENDERING"):
+        server.load_config(
+            {"ARTIFACT_DIR": str(tmp_path), "DOCUSEAL_SERVER_DEFINED_RENDERING": "maybe"}
+        )

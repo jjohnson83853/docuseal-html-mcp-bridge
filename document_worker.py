@@ -21,7 +21,9 @@ def main() -> None:
     request = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     limits = RenderLimits(**request["limits"])
     try:
-        normalized = normalize_html(request["html"], limits)
+        normalized = normalize_html(
+            request["html"], limits, bool(request.get("server_defined"))
+        )
     except ValueError:
         sys.stdout.write(json.dumps({"error": "invalid_input"}))
         return

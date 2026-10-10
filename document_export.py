@@ -48,6 +48,7 @@ ALLOWED_ATTRIBUTES = {"style", "class", "colspan", "rowspan", "width", "height",
 CSS_URL = re.compile(r"(?:url\s*\(|@import)", re.IGNORECASE)
 IMAGE_URI = re.compile(r"^data:image/(png|jpeg|gif|webp);base64,([A-Za-z0-9+/=]+)$", re.I)
 MAX_FIELD_SPACING_PX = 100
+MAX_STYLE_CSS_BYTES = 100_000
 FIELD_SPACING_UNITS = {
     "px": 1,
     "pt": 96 / 72,
@@ -83,6 +84,24 @@ def _safe_style(value: str | None) -> str | None:
     if CSS_URL.search(style) or "\\" in style or "/*" in style or "*/" in style:
         return None
     return style
+
+
+CSS_VECTOR = re.compile(
+    r"(?:url\s*\(|@import|expression\s*\(|behavior\s*:|-moz-binding|</?style)", re.IGNORECASE
+)
+
+
+def _safe_document_style(value: str | None) -> str | None:
+    style = _safe_style(value)
+    if style is None or CSS_VECTOR.search(style) or len(style) > MAX_STYLE_CSS_BYTES:
+        return None
+    return style
+
+
+def _safe_document_css(data: str) -> bool:
+    if CSS_VECTOR.search(data) or "\\" in data or "/*" in data or "*/" in data:
+        return False
+    return len(data) <= MAX_STYLE_CSS_BYTES
 
 
 def _safe_field_style(value: str | None) -> str | None:
@@ -370,30 +389,34 @@ def _safe_stem(name: str) -> str:
 
 
 class _Normalizer(HTMLParser):
-    def __init__(self, limits: RenderLimits) -> None:
+    def __init__(self, limits: RenderLimits, server_defined: bool = False) -> None:
         super().__init__(convert_charrefs=True)
         self.limits = limits
+        self.server_defined = server_defined
+        self.in_style = False
         self.output: list[str] = []
         self.skip: list[str] = []
         self.open_fields: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self.in_style:
+            return
         tag = tag.lower()
-        attributes = dict(attrs)
         if tag in {"script", "style", "svg", "iframe", "object", "embed", "link", "meta", "base"}:
+            if tag == "style" and not self.server_defined:
+                self.in_style = True
+                self.output.append("<style>")
+                return
             if tag in {"script", "style", "svg", "iframe", "object"}:
                 self.skip.append(tag)
-            self.output.append("[Unsupported content omitted for safety]")
-            return
-        if self.skip:
             return
         if tag in FIELD_TAGS:
-            name = attributes.get("name")
+            name = (dict(attrs)).get("name")
             field_type = FIELD_TAGS[tag]
             if not name or not name.strip():
                 raise ValueError("Recognized field requires a name")
             label = f"[{name.strip()} — {field_type} field]"
-            style = _safe_field_style(attributes.get("style"))
+            style = _safe_field_style((dict(attrs)).get("style"))
             style_attribute = (
                 "" if style is None
                 else f' style="{html.escape(style, quote=True)}"'
@@ -405,7 +428,6 @@ class _Normalizer(HTMLParser):
             self.open_fields.append(tag)
             return
         if tag not in ALLOWED_TAGS:
-            self.output.append("[Unsupported HTML element omitted]")
             return
         safe_attrs = []
         for key, value in attrs:
@@ -414,25 +436,32 @@ class _Normalizer(HTMLParser):
             if key not in ALLOWED_ATTRIBUTES or key.startswith("on"):
                 continue
             if key == "style":
-                safe_style = _safe_style(value)
+                safe_style = (
+                    _safe_field_style(value) if self.server_defined
+                    else _safe_document_style(value)
+                )
                 if safe_style is None:
                     continue
                 value = safe_style
             if key == "src":
                 if not IMAGE_URI.fullmatch(value):
-                    self.output.append("[Image omitted: external resources are disabled]")
                     continue
                 _decode_image(value, self.limits)
             safe_attrs.append(f' {key}="{html.escape(value, quote=True)}"')
         self.output.append("<" + tag + "".join(safe_attrs) + ">")
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if self.skip:
+        if self.skip or self.in_style:
             return
         self.handle_starttag(tag, attrs)
         self.handle_endtag(tag)
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
+        if self.in_style:
+            if tag == "style":
+                self.in_style = False
+                self.output.append("</style>")
+            return
         if tag in self.skip:
             self.skip.remove(tag)
             return
@@ -448,6 +477,10 @@ class _Normalizer(HTMLParser):
             self.output.append(f"</{tag}>")
 
     def handle_data(self, data: str) -> None:
+        if self.in_style:
+            if _safe_document_css(data):
+                self.output.append(data)
+            return
         if not self.skip:
             self.output.append(html.escape(data))
 
@@ -479,12 +512,13 @@ def _decode_image(uri: str, limits: RenderLimits) -> bytes | None:
     return raw
 
 
-def normalize_html(source: str, limits: RenderLimits) -> str:
+def normalize_html(source: str, limits: RenderLimits,
+                   server_defined: bool = False) -> str:
     if not isinstance(source, str) or len(source) > limits.max_input_bytes:
         raise ValueError("HTML input exceeds configured limit")
     if len(source.encode("utf-8")) > limits.max_input_bytes:
         raise ValueError("HTML input exceeds configured limit")
-    parser = _Normalizer(limits)
+    parser = _Normalizer(limits, bool(server_defined))
     try:
         parser.feed(source)
         parser.close()
@@ -545,11 +579,12 @@ async def _terminate_worker(process: asyncio.subprocess.Process) -> None:
 
 
 def _encode_worker_payload(html_content: str, document_size: str,
-                           limits: RenderLimits) -> bytes:
+                           limits: RenderLimits, server_defined: bool) -> bytes:
     return json.dumps({
         "html": html_content,
         "size": document_size,
         "limits": vars(limits),
+        "server_defined": bool(server_defined),
     }).encode()
 
 
@@ -612,13 +647,14 @@ async def _remove_worker_scratch(scratch: Path) -> None:
 
 
 async def _subprocess_worker(html_content: str, document_size: str, timeout: float,
-                             limits: RenderLimits) -> tuple[bytes, bytes]:
+                             limits: RenderLimits,
+                             server_defined: bool = False) -> tuple[bytes, bytes]:
     scratch = Path(tempfile.mkdtemp(prefix="docuseal-worker-"))
     process = None
     worker_identity = {}
     try:
         payload = await asyncio.to_thread(
-            _encode_worker_payload, html_content, document_size, limits
+            _encode_worker_payload, html_content, document_size, limits, server_defined
         )
         os.chmod(scratch, 0o700)
         if os.geteuid() == 0:
@@ -754,6 +790,7 @@ async def render_template_documents(
     docx_renderer: Callable[..., Any] | None = None,
     worker_runner: Callable[[str, str], Any] | None = None,
     limits: RenderLimits = RenderLimits(),
+    server_defined: bool = False,
 ) -> dict[str, str]:
     try:
         if _render_lock.locked() or _pending_publications:
@@ -776,14 +813,18 @@ async def render_template_documents(
         try:
             async with asyncio.timeout(limits.worker_timeout_seconds):
                 if worker_runner is not None:
-                    normalized = await asyncio.to_thread(normalize_html, html_content, limits)
+                    normalized = await asyncio.to_thread(
+                        normalize_html, html_content, limits, server_defined
+                    )
                     result = worker_runner(normalized, document_size)
                     if asyncio.iscoroutine(result):
                         pdf_data, docx_data = await result
                     else:
                         pdf_data, docx_data = result
                 elif pdf_renderer is not None or docx_renderer is not None:
-                    normalized = await asyncio.to_thread(normalize_html, html_content, limits)
+                    normalized = await asyncio.to_thread(
+                        normalize_html, html_content, limits, server_defined
+                    )
                     pdf_func = pdf_renderer or _render_pdf
                     docx_func = docx_renderer or _render_docx
                     async with asyncio.TaskGroup() as group:
@@ -800,6 +841,7 @@ async def render_template_documents(
                         document_size,
                         limits.worker_timeout_seconds,
                         limits,
+                        server_defined,
                     )
                 if not isinstance(pdf_data, bytes) or not isinstance(docx_data, bytes):
                     raise DocumentRenderError("Document renderer returned invalid output")

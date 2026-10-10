@@ -60,6 +60,7 @@ class ServerConfig:
     artifact_max_bytes: int
     artifact_max_files: int
     render_limits: RenderLimits
+    server_defined_rendering: bool = False
 
 
 def _positive_int(values: Mapping[str, str], name: str, default: int) -> int:
@@ -120,6 +121,10 @@ def load_config(environ: Mapping[str, str] | None = None) -> ServerConfig:
     artifact_root = Path(artifact_root_value).resolve()
     if artifact_root in {Path("/"), Path.cwd()}:
         raise ValueError("ARTIFACT_DIR must not be a filesystem root or the working directory")
+    raw_rendering_flag = values.get("DOCUSEAL_SERVER_DEFINED_RENDERING", "").strip().lower()
+    if raw_rendering_flag not in {"", "0", "1", "true", "false", "yes", "no", "on", "off"}:
+        raise ValueError("DOCUSEAL_SERVER_DEFINED_RENDERING must be a boolean-like value")
+    server_defined_rendering = raw_rendering_flag in {"1", "true", "yes", "on"}
     return ServerConfig(
         artifact_port=port,
         mcp_host=values.get("MCP_HOST", "127.0.0.1"),
@@ -129,6 +134,7 @@ def load_config(environ: Mapping[str, str] | None = None) -> ServerConfig:
         artifact_max_bytes=_positive_int(values, "MAX_ARTIFACT_BYTES", 256 * 1024 * 1024),
         artifact_max_files=_positive_int(values, "MAX_ARTIFACT_FILES", 100),
         render_limits=limits,
+        server_defined_rendering=server_defined_rendering,
     )
 
 
@@ -137,6 +143,7 @@ mcp = FastMCP("DocuSeal native MCP bridge", instructions=SERVER_INSTRUCTIONS, ho
 _mcp_client = DocuSealMcpClient(DOCUSEAL_URL, DOCUSEAL_MCP_BEARER_TOKEN)
 _artifact_store: ArtifactStore | None = None
 _render_limits = RenderLimits()
+_server_defined_rendering = False
 
 
 @mcp.tool()
@@ -149,7 +156,8 @@ async def render_template_documents(template_name: str, html_content: str,
     return await render_documents(template_name, html_content, document_size,
                                   store=store,
                                   public_base_url=os.getenv("ARTIFACT_PUBLIC_BASE_URL", ""),
-                                  limits=_render_limits)
+                                  limits=_render_limits,
+                                  server_defined=_server_defined_rendering)
 
 
 @mcp.tool()
@@ -197,12 +205,13 @@ class _SecondaryUvicornServer(uvicorn.Server):
 
 
 async def run_servers(config: ServerConfig) -> None:
-    global _artifact_store, _render_limits
+    global _artifact_store, _render_limits, _server_defined_rendering
     _artifact_store = ArtifactStore(config.artifact_root,
                                     retention_seconds=config.retention_seconds,
                                     max_bytes=config.artifact_max_bytes,
                                     max_files=config.artifact_max_files)
     _render_limits = config.render_limits
+    _server_defined_rendering = config.server_defined_rendering
     mcp_server = uvicorn.Server(uvicorn.Config(mcp.streamable_http_app(), host=config.mcp_host,
                                                 port=MCP_PORT, access_log=False))
     artifact_server = _SecondaryUvicornServer(

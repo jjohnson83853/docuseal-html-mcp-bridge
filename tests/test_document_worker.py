@@ -27,7 +27,7 @@ def request_for(html="<p>safe</p>", max_output_bytes=1000):
 
 
 def test_worker_main_returns_encoded_dual_format_output(monkeypatch):
-    monkeypatch.setattr(document_export, "normalize_html", lambda html, limits: "<p>safe</p>")
+    monkeypatch.setattr(document_export, "normalize_html", lambda html, limits, server_defined=False: "<p>safe</p>")
     monkeypatch.setattr(document_export, "_render_pdf", lambda *args, **kwargs: b"pdf-bytes")
     monkeypatch.setattr(document_export, "_render_docx", lambda *args, **kwargs: b"docx-bytes")
 
@@ -45,7 +45,7 @@ def test_worker_main_returns_encoded_dual_format_output(monkeypatch):
     ],
 )
 def test_worker_main_returns_safe_normalization_errors(monkeypatch, failure, expected):
-    def fail_normalize(html, limits):
+    def fail_normalize(html, limits, server_defined=False):
         raise failure
 
     monkeypatch.setattr(document_export, "normalize_html", fail_normalize)
@@ -54,7 +54,7 @@ def test_worker_main_returns_safe_normalization_errors(monkeypatch, failure, exp
 
 
 def test_worker_main_rejects_output_over_configured_limit(monkeypatch):
-    monkeypatch.setattr(document_export, "normalize_html", lambda html, limits: "<p>safe</p>")
+    monkeypatch.setattr(document_export, "normalize_html", lambda html, limits, server_defined=False: "<p>safe</p>")
     monkeypatch.setattr(document_export, "_render_pdf", lambda *args, **kwargs: b"too large")
     monkeypatch.setattr(document_export, "_render_docx", lambda *args, **kwargs: b"docx")
 
