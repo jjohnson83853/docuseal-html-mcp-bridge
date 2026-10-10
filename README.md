@@ -92,6 +92,15 @@ The `ARTIFACT_PORT` value in the Caddy process must be the same value used by Co
 
 The former `list_submissions` filters and `get_submission_status` by-ID lookup are removed because no documented native MCP operations support them. The bridge does not expose `create_template`.
 
+### Authoring prompts
+
+Three MCP prompts help a calling model produce HTML that renders as expected (see `document_export.py` for the enforced rules):
+
+- `document_html_guide`: full guide — allowed tags/attributes, the inline-styles rule (the DOCX converter ignores `<style>` blocks), the page-break idiom `<div style="page-break-after: always"></div>`, keeping blocks together (`break-inside: avoid` in PDF only; keep sections short for DOCX), and everything that is unavailable (JavaScript, SVG, iframes, external resources, web fonts, flexbox/grid in DOCX).
+- `author_document_prompt(document_description)`: returns a ready-to-send authoring prompt embedding the hard requirements.
+- `preflight_document_check(html_document)`: returns a checklist prompt that asks the model to fix violations (external URLs, hiding styles, missing field names, bad page breaks) before calling the render tool.
+
+
 Artifact links are bearer capabilities: anyone with a live link can fetch that one format until expiry. Tokens are random, format-scoped, and expire within 24 hours (default 24h). A process/container restart may invalidate them earlier. Downloads have fixed content type, attachment filename, `nosniff`, `no-store`, and `no-referrer` headers. Artifact storage is ephemeral, private, bounded to 256 MiB/100 files by default, and refuses new files rather than evicting unexpired artifacts. Only one render worker runs at a time; worker input/output, CPU, memory, and wall-clock time are bounded. The Docker image runs the worker under UID 10001. If the parent is launched as root, the child drops to the unprivileged `nobody` UID before interpreter startup, with no supplemental groups. A worker inheriting a non-root bridge service UID can read unexpired artifacts owned by that UID; this residual is accepted. The worker receives no REST secret environment variables. No host port is published.
 
 Both renderers receive normalized HTML. By default the calling model's CSS is rendered: `<style>` blocks and inline `style` attributes are passed through, with resource-loading CSS (`url()`, `@import`, `expression()`, `behavior:`, `-moz-binding`), backslashes, CSS comments, and `</style>` breakouts removed; `<style>` content is capped at 100 KB. Scripts, SVG, iframes, embedded objects, external stylesheets, external/local images, and other unsupported active content are never loaded and are omitted without any placeholder text; embedded raster images are validated against byte and pixel ceilings before either converter sees them. WeasyPrint renders PDF; pinned `html-for-docx` produces DOCX. Unsupported layout/style fidelity is not guaranteed.

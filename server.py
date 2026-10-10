@@ -47,7 +47,80 @@ DOCUSEAL_MCP_BEARER_TOKEN = os.getenv("DOCUSEAL_MCP_BEARER_TOKEN", "")
 MCP_HOST = os.getenv("MCP_HOST", "127.0.0.1")
 MCP_PORT = 8000
 DEFAULT_ARTIFACT_ROOT = Path(tempfile.gettempdir()) / "docuseal-artifacts"
-SERVER_INSTRUCTIONS = """Render model-generated contract HTML to offline PDF and DOCX drafts for manual upload to DocuSeal. The exported files are not DocuSeal templates; users must manually place and verify fields in DocuSeal. Supported field elements are text-field, date-field, signature-field, initials-field, checkbox-field, radio-field, and select-field. DocuSeal operations use its native MCP tools with server-side Bearer credentials. search_documents supports free-text search only; submission status lookup and template/status filters are unavailable. Sending a submission may email signers and requires explicit user authorization."""
+SERVER_INSTRUCTIONS = """Render model-generated contract HTML to offline PDF and DOCX drafts for manual upload to DocuSeal. The exported files are not DocuSeal templates; users must manually place and verify fields in DocuSeal. Supported field elements are text-field, date-field, signature-field, initials-field, checkbox-field, radio-field, and select-field. DocuSeal operations use its native MCP tools with server-side Bearer credentials. search_documents supports free-text search only; submission status lookup and template/status filters are unavailable. Sending a submission may email signers and requires explicit user authorization. Author HTML for the draft with inline styles: JavaScript, SVG, iframes, external resources, and web fonts are unavailable and silently removed. Force page breaks with <div style="page-break-after: always"></div>. Use the document_html_guide prompt before authoring anything nontrivial."""
+
+MAX_PROMPT_TOPIC_CHARS = 4000
+
+DOCUMENT_HTML_GUIDE = """# HTML authoring guide for render_template_documents
+
+You write one HTML fragment per document. It is rendered to PDF (WeasyPrint) and DOCX (html-for-docx) with the page size set by the `document_size` argument (Letter, Legal, A4, A3, A5). Follow this guide so both outputs look as expected.
+
+## 1. Use inline styles for anything that must look right in both formats
+
+The DOCX converter reads inline `style` attributes only; it ignores `<style>` blocks entirely. `<style>` blocks are rendered by the PDF path only.
+
+- Put every style that affects layout or text appearance on the element as an inline `style` attribute.
+- A `<style>` block may add print polish that appears in the PDF (for example `@page` margins or `widows`/`orphans`), but never rely on it for content structure.
+
+## 2. Page breaks (works in BOTH formats)
+
+Insert an explicit page break anywhere with:
+
+    <div style="page-break-after: always"></div>
+
+This is the only page-break mechanism the DOCX converter understands, and the PDF renderer honors it too. Never insert blank paragraphs to push content to the next page.
+
+## 3. Keeping paragraphs and sections together
+
+- PDF: wrap a block that must not be split across pages in `<div style="break-inside: avoid">...</div>`; `orphans` and `widows` are also honored.
+- DOCX: there is no keep-together support. Keep a logical block short (a heading plus a few lines), put it before an explicit page break when it matters, or accept the split. Long paragraphs are always splittable in DOCX.
+
+Rule of thumb: if a section must stay on one page in both formats, keep it short and place page breaks around it explicitly.
+
+## 4. What is NOT available (silently removed, no error)
+
+- JavaScript: all `<script>` elements are stripped. Nothing is interactive or computed.
+- SVG, `<canvas>`, `<video>`, `<audio>`, `<iframe>`, `<object>`, `<embed>`: unsupported; removed.
+- External resources: external stylesheets (`<link>`), `url()` and `@import` in CSS, external images, and remote fonts are all refused. There are no web fonts; only fonts installed in the renderer are available (`serif`, `sans-serif`, `monospace` map to Times New Roman, Arial, and Courier New in DOCX).
+- `<meta>`, `<base>`: ignored.
+- `on*` event attributes: stripped.
+- Unknown HTML tags: the tag is dropped but its text content is kept, so stray tags cannot lose content.
+
+## 5. Allowed HTML
+
+Tags: `p, div, span, br, hr, h1-h6, strong, b, em, i, u, s, ul, ol, li, table, thead, tbody, tr, th, td, blockquote, pre, code, img, section, article`.
+Attributes: `style, class, colspan, rowspan, width, height, alt, src`.
+
+## 6. Layout
+
+- Use tables for multi-column layouts; both formats support them. Flexbox and grid are not supported by the DOCX converter.
+- Headings `h1`-`h6` map to heading styles; use them for structure instead of large bold paragraphs.
+- Prefer explicit `margin` in px/pt/em. Absolute positioning does not survive DOCX conversion; avoid it.
+
+## 7. Images
+
+Only embedded data URIs work: `<img src="data:image/png;base64,...">` (also jpeg, gif, webp). Maximum 2 MiB encoded and 20 megapixels. Everything else (http(s)://, file://, relative paths) is dropped.
+
+## 8. DocuSeal field placeholders
+
+These seven elements render as visible labels `[Name - Type field]` in the drafts (the real interactive fields are placed later in DocuSeal):
+
+    <text-field name="Legal name" role="Signer"></text-field>
+    <date-field name="Effective date"></date-field>
+    <signature-field name="Signature"></signature-field>
+    <initials-field name="Initials"></initials-field>
+    <checkbox-field name="Agreed"></checkbox-field>
+    <radio-field name="Plan"></radio-field>
+    <select-field name="Term"></select-field>
+
+Rules: every field requires a non-empty `name`; `role` is optional. Styles on fields are restricted to spacing (max 100px), borders, display, font-weight/font-style, and text-align, and any style that could hide the label (opacity, visibility, transparent color, font-size 0) is removed.
+
+## 9. Limits
+
+- Input up to 2 MiB; output up to 100 pages by default (server-configured). Exceeding either fails the render and returns no files.
+- One render runs at a time; a concurrent call is rejected immediately.
+- The returned links are expiring download URLs for a finished PDF and DOCX; they are drafts for the user to upload to DocuSeal manually.
+"""
 
 
 @dataclass(frozen=True)
@@ -144,6 +217,50 @@ _mcp_client = DocuSealMcpClient(DOCUSEAL_URL, DOCUSEAL_MCP_BEARER_TOKEN)
 _artifact_store: ArtifactStore | None = None
 _render_limits = RenderLimits()
 _server_defined_rendering = False
+
+
+@mcp.prompt()
+def document_html_guide() -> str:
+    """Full HTML authoring guide: supported tags/CSS, page breaks, and unavailable technologies."""
+    return DOCUMENT_HTML_GUIDE
+
+
+@mcp.prompt()
+def author_document_prompt(document_description: str = "A contract between two parties") -> str:
+    """Build an authoring prompt that applies the guide to one document."""
+    topic = str(document_description).strip()[:MAX_PROMPT_TOPIC_CHARS] or "A contract between two parties"
+    return (
+        "Write a complete, self-contained HTML document for the description below, "
+        "then call render_template_documents with it.\n\n"
+        "Hard requirements:\n"
+        "- Author every visual style as an inline style attribute; the DOCX converter ignores <style> blocks.\n"
+        "- Force page breaks only with <div style=\"page-break-after: always\"></div>.\n"
+        "- Do not use JavaScript, SVG, flexbox, grid, external images, external fonts, or any external resources; they are silently removed.\n"
+        "- Use tables for multi-column layout and h1-h6 for headings.\n"
+        "- If any DocuSeal fields (text-field, date-field, signature-field, initials-field, checkbox-field, radio-field, select-field) are relevant, include them with non-empty name attributes where they should appear.\n"
+        "- Keep sections short enough to fit a page, or surround them with explicit page breaks, so paragraphs and headings are not split awkwardly in DOCX.\n"
+        "- Return only the HTML; do not add explanations.\n\n"
+        f"Document: {topic}\n"
+    )
+
+
+@mcp.prompt()
+def preflight_document_check(html_document: str) -> str:
+    """Checklist prompt to validate HTML before calling render_template_documents."""
+    document = str(html_document).strip()[:MAX_PROMPT_TOPIC_CHARS]
+    return (
+        "Check the HTML below against this checklist and fix every violation before "
+        "calling render_template_documents. Return the corrected HTML only.\n\n"
+        "1. No <script>, <style>-dependent layout, SVG, iframe, or external URLs (href/src/ url()/@import).\n"
+        "2. Images, if any, are data:image/{png,jpeg,gif,webp} URIs under 2 MiB.\n"
+        "3. All layout-affecting CSS is inline; <style> blocks, if present, only add PDF polish.\n"
+        "4. Page breaks use <div style=\"page-break-after: always\"></div>, not blank paragraphs.\n"
+        "5. Multi-column layout uses tables, not flexbox/grid.\n"
+        "6. Every DocuSeal field element has a non-empty name attribute.\n"
+        "7. No styles attempt to hide or erase field labels (opacity, visibility, transparent color, font-size 0).\n"
+        "8. Headings use h1-h6; content is split into short blocks that fit one page.\n\n"
+        f"HTML to check:\n{document}\n"
+    )
 
 
 @mcp.tool()

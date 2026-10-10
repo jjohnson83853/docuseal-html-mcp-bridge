@@ -231,3 +231,28 @@ def test_load_config_rejects_invalid_rendering_flag(tmp_path):
         server.load_config(
             {"ARTIFACT_DIR": str(tmp_path), "DOCUSEAL_SERVER_DEFINED_RENDERING": "maybe"}
         )
+
+
+def test_authoring_prompts_are_registered_and_rendered():
+    prompts = {prompt.name for prompt in asyncio.run(server.mcp.list_prompts())}
+    assert {"document_html_guide", "author_document_prompt",
+            "preflight_document_check"} <= prompts
+
+    render = lambda *args, **kwargs: asyncio.run(
+        server.mcp._prompt_manager.render_prompt(*args, **kwargs)
+    )[0].content.text
+
+    guide = render("document_html_guide", {})
+    assert 'page-break-after: always' in guide
+    assert "break-inside: avoid" in guide
+    assert "JavaScript" in guide and "SVG" in guide
+
+    built = render("author_document_prompt", {"document_description": "NDA between A and B"})
+    assert "NDA between A and B" in built
+    assert 'page-break-after: always' in built
+    fallback = render("author_document_prompt", {"document_description": "   "})
+    assert "A contract between two parties" in fallback
+
+    checklist = render("preflight_document_check", {"html_document": "<p>x</p>"})
+    assert "<p>x</p>" in checklist
+    assert "name attribute" in checklist
